@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict d9GQ2w7EUJUa0VBhwWmRy1B9ojRmdpODQu9OhrvfkiKLPc3pkNuVljet5wtTYIL
+\restrict VhlNnTXQkm1Ne6HLlI4l2rixlaeobNxCDpFyCmbXk5ecUOf0pr1uTFeACcz1jlv
 
 -- Dumped from database version 18.6 (Debian 18.6-3)
 -- Dumped by pg_dump version 18.6 (Debian 18.6-3)
@@ -49,7 +49,7 @@ SET default_table_access_method = heap;
 --
 
 CREATE TABLE evoting.candidates (
-    id uuid NOT NULL,
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
     election_id uuid NOT NULL,
     name character varying NOT NULL,
     description text
@@ -63,7 +63,7 @@ ALTER TABLE evoting.candidates OWNER TO evoting_app;
 --
 
 CREATE TABLE evoting.elections (
-    id uuid NOT NULL,
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
     title character varying NOT NULL,
     description text,
     registration_start timestamp with time zone NOT NULL,
@@ -83,7 +83,7 @@ ALTER TABLE evoting.elections OWNER TO evoting_app;
 --
 
 CREATE TABLE evoting.encrypted_ballots (
-    id uuid NOT NULL,
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
     election_id uuid NOT NULL,
     encrypted_vote bytea NOT NULL,
     proof bytea,
@@ -98,7 +98,7 @@ ALTER TABLE evoting.encrypted_ballots OWNER TO evoting_app;
 --
 
 CREATE TABLE evoting.receipts (
-    id uuid NOT NULL,
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
     election_id uuid NOT NULL,
     receipt_code character varying NOT NULL
 );
@@ -111,7 +111,7 @@ ALTER TABLE evoting.receipts OWNER TO evoting_app;
 --
 
 CREATE TABLE evoting.users (
-    id uuid NOT NULL,
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
     email character varying(255) NOT NULL,
     password_hash character varying(255) NOT NULL,
     role evoting.roles NOT NULL,
@@ -127,7 +127,7 @@ ALTER TABLE evoting.users OWNER TO evoting_app;
 --
 
 CREATE TABLE evoting.voter_eligibility (
-    id uuid NOT NULL,
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
     election_id uuid NOT NULL,
     user_id uuid NOT NULL,
     has_voted boolean DEFAULT false NOT NULL
@@ -276,5 +276,5 @@ ALTER TABLE ONLY evoting.receipts
 -- PostgreSQL database dump complete
 --
 
-\unrestrict d9GQ2w7EUJUa0VBhwWmRy1B9ojRmdpODQu9OhrvfkiKLPc3pkNuVljet5wtTYIL
+\unrestrict VhlNnTXQkm1Ne6HLlI4l2rixlaeobNxCDpFyCmbXk5ecUOf0pr1uTFeACcz1jlv
 
