@@ -25,7 +25,6 @@ type App struct {
 func (a *App) routes() http.Handler {
 	api := http.NewServeMux()
 
-	// Auth
 	api.HandleFunc("POST /api/login", a.handleLogin)
 	api.HandleFunc("POST /api/login/verify-otp", a.handleVerifyOTP)
 	api.HandleFunc("POST /api/login/resend-otp", a.handleResendOTP)
