@@ -1,0 +1,20 @@
+services:
+  db:
+    image: postgres:18
+    environment:
+      POSTGRES_USER: evoting_app
+      POSTGRES_PASSWORD: change-me
+      POSTGRES_DB: evoting_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql
+      - ./database/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+
+volumes:
+  pgdata:
