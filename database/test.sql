@@ -111,9 +111,9 @@ BEGIN
             'Automated PostgreSQL database test',
             NOW(),
             NOW() + INTERVAL '1 day',
-            NOW(),
+            NOW() + INTERVAL '1 day',
             NOW() + INTERVAL '2 days',
-            'open',
+            'registration',
             v_admin_id
         )
     RETURNING id INTO v_election_id;
@@ -516,4 +516,3 @@ SELECT
 ROLLBACK;
 
 \echo 'Test data removed.'
-

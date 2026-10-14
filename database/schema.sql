@@ -14,6 +14,7 @@ SET transaction_timeout = 0;
 SET client_encoding = 'UTF8';
 SET standard_conforming_strings = on;
 SELECT pg_catalog.set_config('search_path', '', false);
+CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA public;
 SET check_function_bodies = false;
 SET xmloption = content;
 SET client_min_messages = warning;
@@ -85,6 +86,7 @@ ALTER TABLE evoting.elections OWNER TO evoting_app;
 CREATE TABLE evoting.encrypted_ballots (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
     election_id uuid NOT NULL,
+    receipt_id uuid,
     encrypted_vote bytea NOT NULL,
     proof bytea,
     ballot_hash character varying NOT NULL
@@ -130,6 +132,7 @@ CREATE TABLE evoting.voter_eligibility (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
     election_id uuid NOT NULL,
     user_id uuid NOT NULL,
+    receipt_id uuid,
     has_voted boolean DEFAULT false NOT NULL
 );
 
@@ -166,6 +169,9 @@ ALTER TABLE ONLY evoting.encrypted_ballots
 
 ALTER TABLE ONLY evoting.encrypted_ballots
     ADD CONSTRAINT encrypted_ballots_pkey PRIMARY KEY (id);
+
+ALTER TABLE ONLY evoting.encrypted_ballots
+    ADD CONSTRAINT encrypted_ballots_receipt_id_key UNIQUE (receipt_id);
 
 
 --
@@ -223,6 +229,9 @@ ALTER TABLE ONLY evoting.users
 ALTER TABLE ONLY evoting.voter_eligibility
     ADD CONSTRAINT voter_eligibility_pkey PRIMARY KEY (id);
 
+ALTER TABLE ONLY evoting.voter_eligibility
+    ADD CONSTRAINT voter_eligibility_receipt_id_key UNIQUE (receipt_id);
+
 
 --
 -- Name: encrypted_ballots fk_ballot_election; Type: FK CONSTRAINT; Schema: evoting; Owner: evoting_app
@@ -230,6 +239,9 @@ ALTER TABLE ONLY evoting.voter_eligibility
 
 ALTER TABLE ONLY evoting.encrypted_ballots
     ADD CONSTRAINT fk_ballot_election FOREIGN KEY (election_id) REFERENCES evoting.elections(id);
+
+ALTER TABLE ONLY evoting.encrypted_ballots
+    ADD CONSTRAINT fk_ballot_receipt FOREIGN KEY (receipt_id) REFERENCES evoting.receipts(id);
 
 
 --
@@ -263,6 +275,9 @@ ALTER TABLE ONLY evoting.voter_eligibility
 ALTER TABLE ONLY evoting.voter_eligibility
     ADD CONSTRAINT fk_eligibility_user FOREIGN KEY (user_id) REFERENCES evoting.users(id);
 
+ALTER TABLE ONLY evoting.voter_eligibility
+    ADD CONSTRAINT fk_eligibility_receipt FOREIGN KEY (receipt_id) REFERENCES evoting.receipts(id);
+
 
 --
 -- Name: receipts fk_receipt_election; Type: FK CONSTRAINT; Schema: evoting; Owner: evoting_app
@@ -277,4 +292,3 @@ ALTER TABLE ONLY evoting.receipts
 --
 
 \unrestrict VhlNnTXQkm1Ne6HLlI4l2rixlaeobNxCDpFyCmbXk5ecUOf0pr1uTFeACcz1jlv
-
