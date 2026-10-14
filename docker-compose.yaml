@@ -22,8 +22,8 @@ services:
       - "6380:6379"
 
   backend:
-    build: ./backend_pake_golang
-    env_file: ./backend_pake_golang/.env
+    build: ./backend
+    env_file: ./backend/.env
     environment:
       DB_HOST: db
       DB_PORT: "5432"
