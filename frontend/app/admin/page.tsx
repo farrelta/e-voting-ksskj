@@ -1,7 +1,15 @@
 import Link from "next/link";
-import { createCandidate, updateElectionStatus } from "@/app/actions";
+import {
+  createCandidate,
+  deleteCandidate,
+  deleteElection,
+  updateCandidate,
+  updateElectionStatus,
+} from "@/app/actions";
 import { LogoutButton } from "@/app/components/logout-button";
-import { getElections, getSessionUser } from "@/lib/backend";
+import { getAdminCandidates, getElections, getSessionUser } from "@/lib/backend";
+import type { Candidate } from "@/lib/backend";
+import { ConfirmSubmitButton } from "./confirm-submit-button";
 import { ElectionForm } from "./election-form";
 
 export default async function AdminPage({
@@ -14,6 +22,13 @@ export default async function AdminPage({
     getElections(),
     searchParams,
   ]);
+  const candidateResults = await Promise.all(
+    elections.map(async (election) => {
+      const { candidates } = await getAdminCandidates(election.id);
+      return [election.id, candidates] as const;
+    }),
+  );
+  const candidatesByElection = new Map<string, Candidate[]>(candidateResults);
 
   return (
     <main className="page-shell">
@@ -58,7 +73,13 @@ export default async function AdminPage({
               <select name="election_id" required defaultValue="">
                 <option value="" disabled>Select an election</option>
                 {elections.map((election) => (
-                  <option key={election.id} value={election.id}>{election.title}</option>
+                  <option
+                    key={election.id}
+                    value={election.id}
+                    disabled={election.status === "active_voting" || election.status === "completed"}
+                  >
+                    {election.title}{election.status === "active_voting" || election.status === "completed" ? " (voting locked)" : ""}
+                  </option>
                 ))}
               </select>
             </label>
@@ -72,6 +93,11 @@ export default async function AdminPage({
             </label>
             <button className="button button-primary" type="submit">Add candidate</button>
           </form>
+        )}
+        {elections.length > 0 && (
+          <p className="candidate-management-help">
+            Candidates can be added, edited, or removed until voting starts.
+          </p>
         )}
       </section>
 
@@ -100,6 +126,47 @@ export default async function AdminPage({
                   <summary>Edit election details</summary>
                   <ElectionForm election={election} />
                 </details>
+                <details className="edit-details candidate-management">
+                  <summary>Manage candidates ({candidatesByElection.get(election.id)?.length ?? 0})</summary>
+                  {candidatesByElection.get(election.id)?.length ? (
+                    <div className="candidate-management-list">
+                      {(candidatesByElection.get(election.id) ?? []).map((candidate) => {
+                        const candidatesLocked = election.status === "active_voting" || election.status === "completed";
+                        return (
+                          <div className="candidate-management-item" key={candidate.id}>
+                            <form className="candidate-edit-form" action={updateCandidate}>
+                              <input type="hidden" name="candidate_id" value={candidate.id} />
+                              <label>
+                                Candidate name
+                                <input name="name" defaultValue={candidate.name} disabled={candidatesLocked} required />
+                              </label>
+                              <label>
+                                Description
+                                <textarea name="description" rows={2} defaultValue={candidate.description} disabled={candidatesLocked} />
+                              </label>
+                              <button className="button button-secondary" disabled={candidatesLocked} type="submit">Save candidate</button>
+                            </form>
+                            <form action={deleteCandidate}>
+                              <input type="hidden" name="candidate_id" value={candidate.id} />
+                              <ConfirmSubmitButton
+                                className="button button-danger"
+                                disabled={candidatesLocked}
+                                message={`Delete ${candidate.name}? This cannot be undone.`}
+                              >
+                                Delete candidate
+                              </ConfirmSubmitButton>
+                            </form>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <p className="muted">No candidates have been added to this election.</p>
+                  )}
+                  {(election.status === "draft" || election.status === "registration") ? (
+                    <p className="candidate-management-help">Candidate details can be changed until voting starts.</p>
+                  ) : <p className="candidate-management-help">Candidate details are locked after voting starts.</p>}
+                </details>
                 <div className="milestone-form">
                   <form action={updateElectionStatus}>
                     <input type="hidden" name="election_id" value={election.id} />
@@ -122,6 +189,15 @@ export default async function AdminPage({
                     <button className="button button-secondary" type="submit">
                       Update status
                     </button>
+                  </form>
+                  <form action={deleteElection}>
+                    <input type="hidden" name="election_id" value={election.id} />
+                    <ConfirmSubmitButton
+                      className="button button-danger"
+                      message={`Delete “${election.title}”? Elections with voter registrations or ballots cannot be deleted.`}
+                    >
+                      Delete election
+                    </ConfirmSubmitButton>
                   </form>
                 </div>
               </article>

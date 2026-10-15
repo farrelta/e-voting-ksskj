@@ -39,10 +39,10 @@ export async function createElection(formData: FormData) {
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Election creation failed.";
-    redirect(`/admin?error=${encodeURIComponent(message)}`);
+    return { ok: false, message };
   }
   revalidatePath("/admin");
-  redirect("/admin?notice=Election%20created");
+  return { ok: true, message: "Election created." };
 }
 
 export async function updateElection(formData: FormData) {
@@ -59,11 +59,28 @@ export async function updateElection(formData: FormData) {
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Election update failed.";
+    return { ok: false, message };
+  }
+  revalidatePath("/admin");
+  revalidatePath("/dashboard");
+  return { ok: true, message: "Election updated." };
+}
+
+export async function deleteElection(formData: FormData) {
+  const electionId = formText(formData, "election_id");
+  try {
+    const response = await backendRequest(
+      `/api/admin/elections/${encodeURIComponent(electionId)}`,
+      { method: "DELETE" },
+    );
+    await readApiResponse(response);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Election deletion failed.";
     redirect(`/admin?error=${encodeURIComponent(message)}`);
   }
   revalidatePath("/admin");
   revalidatePath("/dashboard");
-  redirect("/admin?notice=Election%20updated");
+  redirect("/admin?notice=Election%20deleted");
 }
 
 export async function updateElectionStatus(formData: FormData) {
@@ -96,6 +113,39 @@ export async function createCandidate(formData: FormData) {
   }
   revalidatePath("/admin");
   redirect("/admin?notice=Candidate%20created");
+}
+
+export async function updateCandidate(formData: FormData) {
+  const candidateId = formText(formData, "candidate_id");
+  try {
+    await sendJson(`/api/admin/candidates/${encodeURIComponent(candidateId)}`, "PUT", {
+      name: formText(formData, "name"),
+      description: formText(formData, "description"),
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Candidate update failed.";
+    redirect(`/admin?error=${encodeURIComponent(message)}`);
+  }
+  revalidatePath("/admin");
+  revalidatePath("/dashboard");
+  redirect("/admin?notice=Candidate%20updated");
+}
+
+export async function deleteCandidate(formData: FormData) {
+  const candidateId = formText(formData, "candidate_id");
+  try {
+    const response = await backendRequest(
+      `/api/admin/candidates/${encodeURIComponent(candidateId)}`,
+      { method: "DELETE" },
+    );
+    await readApiResponse(response);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Candidate deletion failed.";
+    redirect(`/admin?error=${encodeURIComponent(message)}`);
+  }
+  revalidatePath("/admin");
+  revalidatePath("/dashboard");
+  redirect("/admin?notice=Candidate%20deleted");
 }
 
 export async function registerForElection(formData: FormData) {

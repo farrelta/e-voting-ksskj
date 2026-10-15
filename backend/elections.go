@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"log"
 	"net/http"
@@ -20,8 +21,8 @@ var electionStatuses = map[string]bool{
 }
 
 type electionInput struct {
-	Title            string `json:"title"`
-	Description      string `json:"description"`
+	Title             string `json:"title"`
+	Description       string `json:"description"`
 	RegistrationStart string `json:"registration_start"`
 	RegistrationEnd   string `json:"registration_end"`
 	VotingStart       string `json:"voting_start"`
@@ -177,6 +178,81 @@ func (a *App) handleUpdateElection(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"message": "Election updated"})
 }
 
+// DELETE /api/admin/elections/{electionId}
+func (a *App) handleDeleteElection(w http.ResponseWriter, r *http.Request) {
+	electionID := r.PathValue("electionId")
+	if _, err := uuid.Parse(electionID); err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid election ID")
+		return
+	}
+
+	tx, err := a.db.Begin(r.Context())
+	if err != nil {
+		log.Printf("begin election deletion: %v", err)
+		writeError(w, http.StatusInternalServerError, "Failed to delete election")
+		return
+	}
+	defer tx.Rollback(r.Context())
+
+	var lockedID string
+	err = tx.QueryRow(
+		r.Context(),
+		`SELECT id::text FROM evoting.elections WHERE id = $1::uuid FOR UPDATE`,
+		electionID,
+	).Scan(&lockedID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "Election not found")
+		return
+	}
+	if err != nil {
+		log.Printf("lock election for deletion: %v", err)
+		writeError(w, http.StatusInternalServerError, "Failed to delete election")
+		return
+	}
+
+	var hasVoters, hasBallots bool
+	if err := tx.QueryRow(r.Context(), `
+		SELECT EXISTS (SELECT 1 FROM evoting.voter_eligibility WHERE election_id = $1::uuid),
+		       EXISTS (SELECT 1 FROM evoting.encrypted_ballots WHERE election_id = $1::uuid)`,
+		electionID,
+	).Scan(&hasVoters, &hasBallots); err != nil {
+		log.Printf("check election records before deletion: %v", err)
+		writeError(w, http.StatusInternalServerError, "Failed to delete election")
+		return
+	}
+	if hasVoters || hasBallots {
+		writeError(w, http.StatusConflict, "Elections with voter registrations or ballots cannot be deleted")
+		return
+	}
+
+	if _, err := tx.Exec(r.Context(), `DELETE FROM evoting.receipts WHERE election_id = $1::uuid`, electionID); err != nil {
+		log.Printf("delete election receipts: %v", err)
+		writeError(w, http.StatusInternalServerError, "Failed to delete election")
+		return
+	}
+	if _, err := tx.Exec(r.Context(), `DELETE FROM evoting.candidates WHERE election_id = $1::uuid`, electionID); err != nil {
+		log.Printf("delete election candidates: %v", err)
+		writeError(w, http.StatusInternalServerError, "Failed to delete election")
+		return
+	}
+	tag, err := tx.Exec(r.Context(), `DELETE FROM evoting.elections WHERE id = $1::uuid`, electionID)
+	if err != nil {
+		log.Printf("delete election: %v", err)
+		writeError(w, http.StatusInternalServerError, "Failed to delete election")
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		writeError(w, http.StatusNotFound, "Election not found")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		log.Printf("commit election deletion: %v", err)
+		writeError(w, http.StatusInternalServerError, "Failed to delete election")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"message": "Election deleted"})
+}
+
 func (a *App) handleUpdateElectionStatus(w http.ResponseWriter, r *http.Request) {
 	electionID := r.PathValue("electionId")
 	if _, err := uuid.Parse(electionID); err != nil {
@@ -221,8 +297,32 @@ func (a *App) handleCreateCandidate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "A valid election and candidate name are required")
 		return
 	}
+	tx, err := a.db.Begin(r.Context())
+	if err != nil {
+		log.Printf("begin candidate creation: %v", err)
+		writeError(w, http.StatusInternalServerError, "Failed to create candidate")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	var status string
+	err = tx.QueryRow(r.Context(), `
+		SELECT status FROM evoting.elections WHERE id = $1::uuid FOR UPDATE`, body.ElectionID,
+	).Scan(&status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "Election not found")
+		return
+	}
+	if err != nil {
+		log.Printf("lock election for candidate creation: %v", err)
+		writeError(w, http.StatusInternalServerError, "Failed to create candidate")
+		return
+	}
+	if !editableCandidateStatus(status) {
+		writeError(w, http.StatusConflict, "Candidates cannot be changed after voting starts")
+		return
+	}
 	var id string
-	err := a.db.QueryRow(r.Context(), `
+	err = tx.QueryRow(r.Context(), `
 		INSERT INTO evoting.candidates (election_id, name, description)
 		VALUES ($1::uuid, $2, NULLIF($3, ''))
 		RETURNING id::text`,
@@ -241,6 +341,11 @@ func (a *App) handleCreateCandidate(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		log.Printf("create candidate: %v", err)
+		writeError(w, http.StatusInternalServerError, "Failed to create candidate")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		log.Printf("commit candidate creation: %v", err)
 		writeError(w, http.StatusInternalServerError, "Failed to create candidate")
 		return
 	}
@@ -292,6 +397,162 @@ func (a *App) handleListCandidates(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"candidates": candidates})
+}
+
+// GET /api/admin/elections/{electionId}/candidates
+func (a *App) handleListElectionCandidates(w http.ResponseWriter, r *http.Request) {
+	electionID := r.PathValue("electionId")
+	if _, err := uuid.Parse(electionID); err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid election ID")
+		return
+	}
+	rows, err := a.db.Query(r.Context(), `
+		SELECT id::text, name, COALESCE(description, '')
+		FROM evoting.candidates WHERE election_id = $1::uuid ORDER BY name`, electionID)
+	if err != nil {
+		log.Printf("list election candidates: %v", err)
+		writeError(w, http.StatusInternalServerError, "Failed to retrieve candidates")
+		return
+	}
+	defer rows.Close()
+	type candidate struct {
+		ID          string `json:"id"`
+		Name        string `json:"name"`
+		Description string `json:"description"`
+	}
+	candidates := make([]candidate, 0)
+	for rows.Next() {
+		var item candidate
+		if err := rows.Scan(&item.ID, &item.Name, &item.Description); err != nil {
+			log.Printf("scan election candidate: %v", err)
+			writeError(w, http.StatusInternalServerError, "Failed to retrieve candidates")
+			return
+		}
+		candidates = append(candidates, item)
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("iterate election candidates: %v", err)
+		writeError(w, http.StatusInternalServerError, "Failed to retrieve candidates")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"candidates": candidates})
+}
+
+func candidateElectionStatus(ctx context.Context, db interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, candidateID string) (string, error) {
+	var status string
+	err := db.QueryRow(ctx, `
+		SELECT e.status FROM evoting.candidates c
+		JOIN evoting.elections e ON e.id = c.election_id
+		WHERE c.id = $1::uuid FOR UPDATE OF e`, candidateID).Scan(&status)
+	return status, err
+}
+
+func editableCandidateStatus(status string) bool {
+	return status == "draft" || status == "registration"
+}
+
+// PUT /api/admin/candidates/{candidateId}
+func (a *App) handleUpdateCandidate(w http.ResponseWriter, r *http.Request) {
+	candidateID := r.PathValue("candidateId")
+	if _, err := uuid.Parse(candidateID); err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid candidate ID")
+		return
+	}
+	var body struct {
+		Name        string `json:"name"`
+		Description string `json:"description"`
+	}
+	if err := decodeJSON(w, r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid candidate details")
+		return
+	}
+	body.Name = strings.TrimSpace(body.Name)
+	body.Description = strings.TrimSpace(body.Description)
+	if body.Name == "" {
+		writeError(w, http.StatusBadRequest, "Candidate name is required")
+		return
+	}
+	tx, err := a.db.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to update candidate")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	status, err := candidateElectionStatus(r.Context(), tx, candidateID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "Candidate not found")
+		return
+	}
+	if err != nil {
+		log.Printf("lock candidate election for update: %v", err)
+		writeError(w, http.StatusInternalServerError, "Failed to update candidate")
+		return
+	}
+	if !editableCandidateStatus(status) {
+		writeError(w, http.StatusConflict, "Candidates cannot be changed after voting starts")
+		return
+	}
+	_, err = tx.Exec(r.Context(), `
+		UPDATE evoting.candidates SET name = $1, description = NULLIF($2, '') WHERE id = $3::uuid`,
+		body.Name, body.Description, candidateID)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			writeError(w, http.StatusConflict, "A candidate with this name already exists for the election")
+			return
+		}
+		log.Printf("update candidate: %v", err)
+		writeError(w, http.StatusInternalServerError, "Failed to update candidate")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		log.Printf("commit candidate update: %v", err)
+		writeError(w, http.StatusInternalServerError, "Failed to update candidate")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"message": "Candidate updated"})
+}
+
+// DELETE /api/admin/candidates/{candidateId}
+func (a *App) handleDeleteCandidate(w http.ResponseWriter, r *http.Request) {
+	candidateID := r.PathValue("candidateId")
+	if _, err := uuid.Parse(candidateID); err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid candidate ID")
+		return
+	}
+	tx, err := a.db.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to delete candidate")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	status, err := candidateElectionStatus(r.Context(), tx, candidateID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "Candidate not found")
+		return
+	}
+	if err != nil {
+		log.Printf("lock candidate election for deletion: %v", err)
+		writeError(w, http.StatusInternalServerError, "Failed to delete candidate")
+		return
+	}
+	if !editableCandidateStatus(status) {
+		writeError(w, http.StatusConflict, "Candidates cannot be changed after voting starts")
+		return
+	}
+	if _, err := tx.Exec(r.Context(), `DELETE FROM evoting.candidates WHERE id = $1::uuid`, candidateID); err != nil {
+		log.Printf("delete candidate: %v", err)
+		writeError(w, http.StatusInternalServerError, "Failed to delete candidate")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		log.Printf("commit candidate deletion: %v", err)
+		writeError(w, http.StatusInternalServerError, "Failed to delete candidate")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"message": "Candidate deleted"})
 }
 
 func electionNotFound(err error) bool {

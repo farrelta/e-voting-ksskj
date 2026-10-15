@@ -45,10 +45,18 @@ func (a *App) routes() http.Handler {
 		requireAdmin(http.HandlerFunc(a.handleCreateElection)))
 	api.Handle("PUT /api/admin/elections/{electionId}",
 		requireAdmin(http.HandlerFunc(a.handleUpdateElection)))
+	api.Handle("DELETE /api/admin/elections/{electionId}",
+		requireAdmin(http.HandlerFunc(a.handleDeleteElection)))
 	api.Handle("POST /api/admin/elections/{electionId}/status",
 		requireAdmin(http.HandlerFunc(a.handleUpdateElectionStatus)))
 	api.Handle("POST /api/admin/candidates",
 		requireAdmin(http.HandlerFunc(a.handleCreateCandidate)))
+	api.Handle("GET /api/admin/elections/{electionId}/candidates",
+		requireAdmin(http.HandlerFunc(a.handleListElectionCandidates)))
+	api.Handle("PUT /api/admin/candidates/{candidateId}",
+		requireAdmin(http.HandlerFunc(a.handleUpdateCandidate)))
+	api.Handle("DELETE /api/admin/candidates/{candidateId}",
+		requireAdmin(http.HandlerFunc(a.handleDeleteCandidate)))
 	api.Handle("GET /api/admin/elections/{electionId}/voters",
 		requireAdmin(http.HandlerFunc(a.handleListVoters)))
 

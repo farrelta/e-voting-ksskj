@@ -64,6 +64,13 @@ export async function getCandidates(electionId: string) {
   return readApiResponse<{ candidates: Candidate[] }>(response);
 }
 
+export async function getAdminCandidates(electionId: string) {
+  const response = await backendRequest(
+    `/api/admin/elections/${encodeURIComponent(electionId)}/candidates`,
+  );
+  return readApiResponse<{ candidates: Candidate[] }>(response);
+}
+
 export async function getSessionUser() {
   const response = await backendRequest("/api/me");
   return readApiResponse<{ user: SessionUser }>(response);

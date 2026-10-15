@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useEffect, useRef, useState, useTransition } from "react";
+import { useRouter } from "next/navigation";
 import { createElection, updateElection } from "@/app/actions";
 import type { Election } from "@/lib/backend";
 
@@ -12,9 +13,10 @@ function localDateTime(value: string) {
 
 export function ElectionForm({ election }: { election?: Election }) {
   const formRef = useRef<HTMLFormElement>(null);
+  const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState("");
-  const action = election ? updateElection : createElection;
+  const [success, setSuccess] = useState("");
 
   useEffect(() => {
     if (!election || !formRef.current) return;
@@ -29,11 +31,18 @@ export function ElectionForm({ election }: { election?: Election }) {
         input.value = localDateTime(election[field]);
       }
     }
-  }, [election]);
+  }, [
+    election?.id,
+    election?.registration_start,
+    election?.registration_end,
+    election?.voting_start,
+    election?.voting_end,
+  ]);
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError("");
+    setSuccess("");
     const formData = new FormData(event.currentTarget);
     for (const field of [
       "registration_start",
@@ -54,11 +63,15 @@ export function ElectionForm({ election }: { election?: Election }) {
       formData.set(field, date.toISOString());
     }
     startTransition(async () => {
-      try {
-        await action(formData);
-      } catch (reason) {
-        setError(reason instanceof Error ? reason.message : "Election save failed.");
+      const result = election
+        ? await updateElection(formData)
+        : await createElection(formData);
+      if (!result.ok) {
+        setError(result.message);
+        return;
       }
+      setSuccess(result.message);
+      router.refresh();
     });
   }
 
@@ -121,6 +134,7 @@ export function ElectionForm({ election }: { election?: Election }) {
         </select>
       </label>
       {error && <p className="form-message error-message" role="alert">{error}</p>}
+      {success && <p className="form-message" role="status">{success}</p>}
       <button className="button button-primary" disabled={pending} type="submit">
         {pending ? "Saving…" : election ? "Save election" : "Create election"}
       </button>
