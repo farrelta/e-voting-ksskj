@@ -148,22 +148,6 @@ export async function deleteCandidate(formData: FormData) {
   redirect("/admin?notice=Candidate%20deleted");
 }
 
-export async function registerForElection(formData: FormData) {
-  const electionId = formText(formData, "election_id");
-  try {
-    const response = await backendRequest(
-      `/api/elections/${encodeURIComponent(electionId)}/registration`,
-      { method: "POST" },
-    );
-    await readApiResponse(response);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "Registration failed.";
-    redirect(`/dashboard?error=${encodeURIComponent(message)}`);
-  }
-  revalidatePath("/dashboard");
-  redirect("/dashboard?notice=Registration%20complete");
-}
-
 export async function submitEncryptedBallot(
   electionId: string,
   receiptId: string,

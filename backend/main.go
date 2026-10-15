@@ -35,8 +35,6 @@ func (a *App) routes() http.Handler {
 	api.Handle("GET /api/elections", requireLogin(http.HandlerFunc(a.handleListElections)))
 	api.Handle("GET /api/elections/{electionId}/candidates",
 		requireVoter(http.HandlerFunc(a.handleListCandidates)))
-	api.Handle("POST /api/elections/{electionId}/registration",
-		requireVoter(http.HandlerFunc(a.handleRegisterVoter)))
 	api.Handle("POST /api/elections/{electionId}/ballots",
 		requireVoter(http.HandlerFunc(a.handleSubmitBallot)))
 	api.HandleFunc("GET /api/verify/{receiptCode}", a.handleVerifyReceipt)
@@ -59,6 +57,10 @@ func (a *App) routes() http.Handler {
 		requireAdmin(http.HandlerFunc(a.handleDeleteCandidate)))
 	api.Handle("GET /api/admin/elections/{electionId}/voters",
 		requireAdmin(http.HandlerFunc(a.handleListVoters)))
+	api.Handle("POST /api/admin/elections/{electionId}/voters",
+		requireAdmin(http.HandlerFunc(a.handleGrantEligibility)))
+	api.Handle("DELETE /api/admin/elections/{electionId}/voters/{userId}",
+		requireAdmin(http.HandlerFunc(a.handleRevokeEligibility)))
 
 	if a.cfg.IsDev() {
 		api.HandleFunc("GET /api/redis-test", func(w http.ResponseWriter, r *http.Request) {

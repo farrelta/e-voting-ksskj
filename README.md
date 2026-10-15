@@ -88,6 +88,15 @@ Get-Content -Raw database\migrations\001_receipt_ballot_link.sql |
   docker compose exec -T db psql -U evoting_app -d evoting_db
 ```
 
+If your database predates candidate ordering and election keys, also apply
+`002_candidate_position_and_election_keys.sql` the same way (it is safe to
+re-run):
+
+```powershell
+Get-Content -Raw database\migrations\002_candidate_position_and_election_keys.sql |
+  docker compose exec -T db psql -U evoting_app -d evoting_db
+```
+
 Then start or rebuild the remaining services:
 
 ```powershell
