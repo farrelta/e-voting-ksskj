@@ -703,3 +703,63 @@ code {
     margin-left: 0;
   }
 }
+
+/* Admin voter list and login QR */
+.voter-management {
+  margin-top: 12px;
+}
+
+.voter-add-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: flex-end;
+  margin: 12px 0;
+}
+
+.voter-add-form label {
+  flex: 1 1 240px;
+}
+
+.voter-list {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+}
+
+.voter-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 12px 0;
+  border-top: 1px solid var(--line);
+}
+
+.voter-identity {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.voter-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.qr-box {
+  margin-top: 10px;
+  padding: 12px;
+  max-width: 280px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--white);
+  display: grid;
+  gap: 8px;
+  justify-items: center;
+  text-align: center;
+}

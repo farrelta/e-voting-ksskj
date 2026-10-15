@@ -1,0 +1,1322 @@
+diff --git a/README.md b/README.md
+index 4320a47..b79f2f9 100644
+--- a/README.md
++++ b/README.md
+@@ -141,3 +141,25 @@ generate an invented proof, and the API rejects ballot submissions until a
+ verifier is installed. Candidate selections remain in the browser. Do not
+ enable ballot submission by substituting generic encryption or by sending a
+ plain candidate identifier to the API.
++
++## Voter QR sign-in
++
++Eligible voters sign in by scanning a QR code instead of typing a password.
++
++1. In **Admin → Eligible voters**, add the voter's email, then press **Login QR**
++   next to their name.
++2. The voter scans the QR with their phone. The link is single-use, expires after
++   15 minutes, and is cancelled if the admin creates a new QR for that voter.
++3. Scanning only identifies the voter. They must still enter the six-digit one-time
++   code to finish signing in.
++
++A phone cannot open `localhost`. Before starting, set `PUBLIC_APP_URL` to an address
++the phone can reach (this computer's LAN IP or a domain), for example:
++
++```powershell
++$env:PUBLIC_APP_URL = "http://192.168.1.20:3000"
++docker compose up --build
++```
++
++Note: one-time codes are currently only printed in the backend log in development
++mode; sending them by email still needs to be implemented.
+diff --git a/backend/main.go b/backend/main.go
+index 0c1687c..16aad6a 100644
+--- a/backend/main.go
++++ b/backend/main.go
+@@ -20,6 +20,7 @@ type App struct {
+ 	rdb            *redis.Client
+ 	sessions       *SessionStore
+ 	otp            *OTPService
++	qr             *QRService
+ 	ballotVerifier BallotVerifier
+ }
+ 
+@@ -29,6 +30,7 @@ func (a *App) routes() http.Handler {
+ 	api.HandleFunc("POST /api/login", a.handleLogin)
+ 	api.HandleFunc("POST /api/login/verify-otp", a.handleVerifyOTP)
+ 	api.HandleFunc("POST /api/login/resend-otp", a.handleResendOTP)
++	api.HandleFunc("POST /api/login/qr", a.handleQRLogin)
+ 	api.HandleFunc("GET /api/me", a.handleMe)
+ 	api.HandleFunc("POST /api/logout", a.handleLogout)
+ 
+@@ -59,6 +61,8 @@ func (a *App) routes() http.Handler {
+ 		requireAdmin(http.HandlerFunc(a.handleListVoters)))
+ 	api.Handle("POST /api/admin/elections/{electionId}/voters",
+ 		requireAdmin(http.HandlerFunc(a.handleGrantEligibility)))
++	api.Handle("POST /api/admin/elections/{electionId}/voters/{userId}/qr",
++		requireAdmin(http.HandlerFunc(a.handleCreateVoterQR)))
+ 	api.Handle("DELETE /api/admin/elections/{electionId}/voters/{userId}",
+ 		requireAdmin(http.HandlerFunc(a.handleRevokeEligibility)))
+ 
+@@ -111,6 +115,7 @@ func main() {
+ 		rdb:      rdb,
+ 		sessions: newSessionStore(rdb, cfg.IsProduction()),
+ 		otp:      newOTPService(rdb, cfg.OTPSecret),
++		qr:       newQRService(rdb),
+ 	}
+ 
+ 	srv := &http.Server{
+diff --git a/backend/qr.go b/backend/qr.go
+new file mode 100644
+index 0000000..12fca61
+--- /dev/null
++++ b/backend/qr.go
+@@ -0,0 +1,214 @@
++package main
++
++import (
++	"context"
++	"crypto/rand"
++	"crypto/sha256"
++	"encoding/base64"
++	"encoding/hex"
++	"errors"
++	"log"
++	"net/http"
++	"time"
++
++	"github.com/google/uuid"
++	"github.com/jackc/pgx/v5"
++	"github.com/redis/go-redis/v9"
++)
++
++// QR login tokens.
++//
++// An admin issues a token for one eligible voter. It is shown as a QR code, and
++// the voter scans it with their phone. The token is:
++//   - 256 bits of randomness (not guessable),
++//   - stored only as a SHA-256 hash in Redis (a Redis leak doesn't leak live tokens),
++//   - single-use (redeemed with an atomic GETDEL),
++//   - short-lived (qrTokenTTL),
++//   - replaced when the admin issues a new one for the same voter.
++//
++// Scanning only identifies the voter. It does NOT log them in: it starts the
++// same email OTP challenge as the password login, and the OTP step finishes it.
++const qrTokenTTL = 15 * time.Minute
++
++func qrTokenKey(hash string) string    { return "qr:login:" + hash }
++func qrActiveKey(userID string) string { return "qr:active:" + userID }
++
++func hashQRToken(token string) string {
++	sum := sha256.Sum256([]byte(token))
++	return hex.EncodeToString(sum[:])
++}
++
++type QRService struct {
++	rdb *redis.Client
++}
++
++func newQRService(rdb *redis.Client) *QRService {
++	return &QRService{rdb: rdb}
++}
++
++// Issue creates a new token for userID and invalidates any earlier one.
++func (s *QRService) Issue(ctx context.Context, userID string) (string, error) {
++	raw := make([]byte, 32)
++	if _, err := rand.Read(raw); err != nil {
++		return "", err
++	}
++	token := base64.RawURLEncoding.EncodeToString(raw)
++	hash := hashQRToken(token)
++
++	prev, err := s.rdb.Get(ctx, qrActiveKey(userID)).Result()
++	if err != nil && !errors.Is(err, redis.Nil) {
++		return "", err
++	}
++	if prev != "" {
++		if err := s.rdb.Del(ctx, qrTokenKey(prev)).Err(); err != nil {
++			return "", err
++		}
++	}
++
++	pipe := s.rdb.TxPipeline()
++	pipe.Set(ctx, qrTokenKey(hash), userID, qrTokenTTL)
++	pipe.Set(ctx, qrActiveKey(userID), hash, qrTokenTTL)
++	if _, err := pipe.Exec(ctx); err != nil {
++		return "", err
++	}
++	return token, nil
++}
++
++// Redeem consumes a token. ok is false if it is unknown, expired or already used.
++func (s *QRService) Redeem(ctx context.Context, token string) (userID string, ok bool, err error) {
++	if token == "" || len(token) > 128 {
++		return "", false, nil
++	}
++	userID, err = s.rdb.GetDel(ctx, qrTokenKey(hashQRToken(token))).Result()
++	if errors.Is(err, redis.Nil) {
++		return "", false, nil
++	}
++	if err != nil {
++		return "", false, err
++	}
++	if err := s.rdb.Del(ctx, qrActiveKey(userID)).Err(); err != nil {
++		return "", false, err
++	}
++	return userID, true, nil
++}
++
++// POST /api/admin/elections/{electionId}/voters/{userId}/qr
++//
++// Issues a login QR token for an eligible voter who has not voted yet.
++func (a *App) handleCreateVoterQR(w http.ResponseWriter, r *http.Request) {
++	electionID := r.PathValue("electionId")
++	userID := r.PathValue("userId")
++	if _, err := uuid.Parse(electionID); err != nil {
++		writeError(w, http.StatusBadRequest, "Invalid election ID")
++		return
++	}
++	if _, err := uuid.Parse(userID); err != nil {
++		writeError(w, http.StatusBadRequest, "Invalid user ID")
++		return
++	}
++
++	var status string
++	var hasVoted bool
++	err := a.db.QueryRow(r.Context(), `
++		SELECT e.status, ve.has_voted
++		FROM evoting.voter_eligibility ve
++		JOIN evoting.elections e ON e.id = ve.election_id
++		JOIN evoting.users u ON u.id = ve.user_id
++		WHERE ve.election_id = $1::uuid AND ve.user_id = $2::uuid
++			AND u.role = 'voter' AND u.is_verified = TRUE`,
++		electionID, userID,
++	).Scan(&status, &hasVoted)
++	if errors.Is(err, pgx.ErrNoRows) {
++		writeError(w, http.StatusNotFound, "Voter is not eligible for this election")
++		return
++	}
++	if err != nil {
++		log.Printf("check voter for qr: %v", err)
++		writeError(w, http.StatusInternalServerError, "Failed to create QR code")
++		return
++	}
++	if status == "completed" {
++		writeError(w, http.StatusConflict, "Election is completed")
++		return
++	}
++	if hasVoted {
++		writeError(w, http.StatusConflict, "This voter has already voted")
++		return
++	}
++
++	token, err := a.qr.Issue(r.Context(), userID)
++	if err != nil {
++		log.Printf("issue qr token: %v", err)
++		writeError(w, http.StatusInternalServerError, "Failed to create QR code")
++		return
++	}
++	writeJSON(w, http.StatusCreated, map[string]any{
++		"token":              token,
++		"expires_in_seconds": int(qrTokenTTL.Seconds()),
++	})
++}
++
++// POST /api/login/qr
++// Body: {"token": "..."}
++//
++// Redeems a scanned QR token and starts the email OTP challenge for that voter.
++// The login is completed by POST /api/login/verify-otp, exactly as for password login.
++func (a *App) handleQRLogin(w http.ResponseWriter, r *http.Request) {
++	var body struct {
++		Token string `json:"token"`
++	}
++	if err := decodeJSON(w, r, &body); err != nil || body.Token == "" {
++		writeError(w, http.StatusBadRequest, "A QR token is required")
++		return
++	}
++
++	ctx := r.Context()
++	userID, ok, err := a.qr.Redeem(ctx, body.Token)
++	if err != nil {
++		log.Printf("redeem qr token: %v", err)
++		writeError(w, http.StatusInternalServerError, "QR sign-in failed")
++		return
++	}
++	if !ok {
++		writeError(w, http.StatusUnauthorized, "This QR code is invalid, expired, or has already been used")
++		return
++	}
++
++	var email, role string
++	var isVerified bool
++	err = a.db.QueryRow(ctx, `
++		SELECT email, role::text, is_verified
++		FROM evoting.users WHERE id = $1::uuid`,
++		userID,
++	).Scan(&email, &role, &isVerified)
++	if errors.Is(err, pgx.ErrNoRows) || (err == nil && (role != "voter" || !isVerified)) {
++		writeError(w, http.StatusForbidden, "This account cannot sign in with a QR code")
++		return
++	}
++	if err != nil {
++		log.Printf("qr login user lookup: %v", err)
++		writeError(w, http.StatusInternalServerError, "QR sign-in failed")
++		return
++	}
++
++	challengeID, otp, err := a.otp.CreateChallenge(ctx, userID)
++	if err != nil {
++		log.Printf("create otp challenge: %v", err)
++		writeError(w, http.StatusInternalServerError, "QR sign-in failed")
++		return
++	}
++	sess := sessionFrom(r)
++	sess.PendingChallengeID = challengeID
++	if err := a.sessions.Save(ctx, w, sess); err != nil {
++		log.Printf("save session: %v", err)
++		writeError(w, http.StatusInternalServerError, "Failed to create login session")
++		return
++	}
++	if a.cfg.IsDev() {
++		log.Printf("[DEV ONLY] OTP for %s (QR sign-in): %s", email, otp)
++	}
++	writeJSON(w, http.StatusOK, map[string]any{
++		"message":      "OTP required",
++		"otp_required": true,
++	})
++}
+diff --git a/backend/qr_test.go b/backend/qr_test.go
+new file mode 100644
+index 0000000..cdef858
+--- /dev/null
++++ b/backend/qr_test.go
+@@ -0,0 +1,86 @@
++package main
++
++import (
++	"context"
++	"testing"
++	"time"
++
++	"github.com/alicebob/miniredis/v2"
++	"github.com/redis/go-redis/v9"
++)
++
++func newTestQR(t *testing.T) (*QRService, *miniredis.Miniredis) {
++	t.Helper()
++	mr := miniredis.RunT(t)
++	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
++	t.Cleanup(func() { rdb.Close() })
++	return newQRService(rdb), mr
++}
++
++func TestQRTokenIsSingleUse(t *testing.T) {
++	s, _ := newTestQR(t)
++	ctx := context.Background()
++	token, err := s.Issue(ctx, "user-1")
++	if err != nil {
++		t.Fatal(err)
++	}
++	uid, ok, err := s.Redeem(ctx, token)
++	if err != nil || !ok || uid != "user-1" {
++		t.Fatalf("first redeem = (%q, %v, %v), want (user-1, true, nil)", uid, ok, err)
++	}
++	if _, ok, _ := s.Redeem(ctx, token); ok {
++		t.Fatal("token must not be redeemable twice")
++	}
++}
++
++func TestQRTokenExpires(t *testing.T) {
++	s, mr := newTestQR(t)
++	ctx := context.Background()
++	token, _ := s.Issue(ctx, "user-1")
++	mr.FastForward(qrTokenTTL + time.Second)
++	if _, ok, _ := s.Redeem(ctx, token); ok {
++		t.Fatal("expired token must be rejected")
++	}
++}
++
++func TestQRNewTokenInvalidatesOldOne(t *testing.T) {
++	s, _ := newTestQR(t)
++	ctx := context.Background()
++	oldTok, _ := s.Issue(ctx, "user-1")
++	newTok, _ := s.Issue(ctx, "user-1")
++	if _, ok, _ := s.Redeem(ctx, oldTok); ok {
++		t.Fatal("old token must be invalid after a new one is issued")
++	}
++	if uid, ok, _ := s.Redeem(ctx, newTok); !ok || uid != "user-1" {
++		t.Fatal("new token should work")
++	}
++}
++
++func TestQRRejectsGarbageAndStoresOnlyHashes(t *testing.T) {
++	s, mr := newTestQR(t)
++	ctx := context.Background()
++	for _, bad := range []string{"", "nope", string(make([]byte, 200))} {
++		if _, ok, err := s.Redeem(ctx, bad); ok || err != nil {
++			t.Fatalf("Redeem(%q) = ok:%v err:%v, want rejected", bad, ok, err)
++		}
++	}
++	token, _ := s.Issue(ctx, "user-1")
++	for _, k := range mr.Keys() {
++		if k == "qr:login:"+token {
++			t.Fatal("raw token must never be used as a Redis key")
++		}
++	}
++	if mr.Exists("qr:login:"+hashQRToken(token)) == false {
++		t.Fatal("hashed token key should exist")
++	}
++}
++
++func TestQRTokensAreUnique(t *testing.T) {
++	s, _ := newTestQR(t)
++	ctx := context.Background()
++	a, _ := s.Issue(ctx, "user-1")
++	b, _ := s.Issue(ctx, "user-2")
++	if a == b || len(a) < 40 {
++		t.Fatalf("tokens should be long and unique: %q %q", a, b)
++	}
++}
+diff --git a/docker-compose.yaml b/docker-compose.yaml
+index 51d2cee..3d5f8bb 100644
+--- a/docker-compose.yaml
++++ b/docker-compose.yaml
+@@ -44,6 +44,9 @@ services:
+         BACKEND_URL: http://backend:3001
+     environment:
+       BACKEND_URL: http://backend:3001
++      # Address voters' phones use to open the QR login link. localhost will NOT
++      # work from a phone: use this computer's LAN IP or a real domain.
++      PUBLIC_APP_URL: ${PUBLIC_APP_URL:-http://localhost:3000}
+       NODE_ENV: production
+     ports:
+       - "3000:3000"
+diff --git a/frontend/app/actions.ts b/frontend/app/actions.ts
+index cbd772e..98c85f8 100644
+--- a/frontend/app/actions.ts
++++ b/frontend/app/actions.ts
+@@ -1,7 +1,9 @@
+ "use server";
+ 
+ import { revalidatePath } from "next/cache";
++import { headers } from "next/headers";
+ import { redirect } from "next/navigation";
++import QRCode from "qrcode";
+ import { backendRequest, readApiResponse } from "@/lib/backend";
+ 
+ function formText(formData: FormData, key: string) {
+@@ -182,3 +184,88 @@ export async function submitEncryptedBallot(
+     };
+   }
+ }
++
++export async function grantEligibility(formData: FormData) {
++  const electionId = formText(formData, "election_id");
++  try {
++    await sendJson(
++      `/api/admin/elections/${encodeURIComponent(electionId)}/voters`,
++      "POST",
++      { email: formText(formData, "email") },
++    );
++  } catch (error) {
++    const message = error instanceof Error ? error.message : "Could not add voter.";
++    redirect(`/admin?error=${encodeURIComponent(message)}`);
++  }
++  revalidatePath("/admin");
++  redirect("/admin?notice=Voter%20added%20to%20the%20eligible%20list");
++}
++
++export async function revokeEligibility(formData: FormData) {
++  const electionId = formText(formData, "election_id");
++  const userId = formText(formData, "user_id");
++  try {
++    const response = await backendRequest(
++      `/api/admin/elections/${encodeURIComponent(electionId)}/voters/${encodeURIComponent(userId)}`,
++      { method: "DELETE" },
++    );
++    await readApiResponse(response);
++  } catch (error) {
++    const message = error instanceof Error ? error.message : "Could not remove voter.";
++    redirect(`/admin?error=${encodeURIComponent(message)}`);
++  }
++  revalidatePath("/admin");
++  redirect("/admin?notice=Voter%20removed%20from%20the%20eligible%20list");
++}
++
++async function publicOrigin() {
++  const configured = process.env.PUBLIC_APP_URL?.trim().replace(/\/+$/, "");
++  if (configured) return configured;
++  const h = await headers();
++  const host = h.get("x-forwarded-host") ?? h.get("host") ?? "localhost:3000";
++  const proto = h.get("x-forwarded-proto") ?? "http";
++  return `${proto}://${host}`;
++}
++
++export type VoterQrResult =
++  | {
++      ok: true;
++      qrDataUrl: string;
++      url: string;
++      expiresInSeconds: number;
++      unreachableFromPhone: boolean;
++    }
++  | { ok: false; message: string };
++
++// Issues a single-use login QR for one eligible voter. The token only appears in
++// the QR/link and is never stored by the frontend.
++export async function createVoterQr(
++  electionId: string,
++  userId: string,
++): Promise<VoterQrResult> {
++  try {
++    const response = await backendRequest(
++      `/api/admin/elections/${encodeURIComponent(electionId)}/voters/${encodeURIComponent(userId)}/qr`,
++      { method: "POST" },
++    );
++    const data = await readApiResponse<{
++      token: string;
++      expires_in_seconds: number;
++    }>(response);
++    const url = `${await publicOrigin()}/scan?token=${encodeURIComponent(data.token)}`;
++    const qrDataUrl = await QRCode.toDataURL(url, { margin: 2, width: 320 });
++    const host = new URL(url).hostname;
++    return {
++      ok: true,
++      qrDataUrl,
++      url,
++      expiresInSeconds: data.expires_in_seconds,
++      unreachableFromPhone: host === "localhost" || host === "127.0.0.1",
++    };
++  } catch (error) {
++    return {
++      ok: false,
++      message: error instanceof Error ? error.message : "Could not create QR code.",
++    };
++  }
++}
+diff --git a/frontend/app/admin/page.tsx b/frontend/app/admin/page.tsx
+index 36794e0..4c22a10 100644
+--- a/frontend/app/admin/page.tsx
++++ b/frontend/app/admin/page.tsx
+@@ -7,10 +7,16 @@ import {
+   updateElectionStatus,
+ } from "@/app/actions";
+ import { LogoutButton } from "@/app/components/logout-button";
+-import { getAdminCandidates, getElections, getSessionUser } from "@/lib/backend";
+-import type { Candidate } from "@/lib/backend";
++import {
++  getAdminCandidates,
++  getElections,
++  getSessionUser,
++  getVoters,
++} from "@/lib/backend";
++import type { Candidate, VoterStatus } from "@/lib/backend";
+ import { ConfirmSubmitButton } from "./confirm-submit-button";
+ import { ElectionForm } from "./election-form";
++import { VoterPanel } from "./voter-panel";
+ 
+ export default async function AdminPage({
+   searchParams,
+@@ -29,6 +35,13 @@ export default async function AdminPage({
+     }),
+   );
+   const candidatesByElection = new Map<string, Candidate[]>(candidateResults);
++  const voterResults = await Promise.all(
++    elections.map(async (election) => {
++      const { voters } = await getVoters(election.id);
++      return [election.id, voters] as const;
++    }),
++  );
++  const votersByElection = new Map<string, VoterStatus[]>(voterResults);
+ 
+   return (
+     <main className="page-shell">
+@@ -167,6 +180,11 @@ export default async function AdminPage({
+                     <p className="candidate-management-help">Candidate details can be changed until voting starts.</p>
+                   ) : <p className="candidate-management-help">Candidate details are locked after voting starts.</p>}
+                 </details>
++                <VoterPanel
++                  electionId={election.id}
++                  status={election.status}
++                  voters={votersByElection.get(election.id) ?? []}
++                />
+                 <div className="milestone-form">
+                   <form action={updateElectionStatus}>
+                     <input type="hidden" name="election_id" value={election.id} />
+diff --git a/frontend/app/admin/voter-panel.tsx b/frontend/app/admin/voter-panel.tsx
+new file mode 100644
+index 0000000..10d949f
+--- /dev/null
++++ b/frontend/app/admin/voter-panel.tsx
+@@ -0,0 +1,68 @@
++import { grantEligibility, revokeEligibility } from "@/app/actions";
++import type { VoterStatus } from "@/lib/backend";
++import { ConfirmSubmitButton } from "./confirm-submit-button";
++import { VoterQr } from "./voter-qr";
++
++// Admin-side voter list. By design it only ever shows WHO is eligible and WHETHER
++// they have voted. It has no way to show a voter's choice.
++export function VoterPanel({
++  electionId,
++  status,
++  voters,
++}: {
++  electionId: string;
++  status: string;
++  voters: VoterStatus[];
++}) {
++  const locked = status === "completed";
++  const votedCount = voters.filter((voter) => voter.has_voted).length;
++
++  return (
++    <details className="edit-details voter-management">
++      <summary>
++        Eligible voters ({voters.length}, {votedCount} voted)
++      </summary>
++      {!locked && (
++        <form className="voter-add-form" action={grantEligibility}>
++          <input type="hidden" name="election_id" value={electionId} />
++          <label>
++            Add an eligible voter by email
++            <input name="email" type="email" required placeholder="voter@example.com" />
++          </label>
++          <button className="button button-primary" type="submit">Add voter</button>
++        </form>
++      )}
++      {voters.length === 0 ? (
++        <p className="muted">No voters have been made eligible yet.</p>
++      ) : (
++        <ul className="voter-list">
++          {voters.map((voter) => (
++            <li className="voter-row" key={voter.user_id}>
++              <div className="voter-identity">
++                <span>{voter.email}</span>
++                <span className={voter.has_voted ? "status status-active_voting" : "status status-draft"}>
++                  {voter.has_voted ? "Voted" : "Not voted"}
++                </span>
++              </div>
++              {!voter.has_voted && !locked && (
++                <div className="voter-actions">
++                  <VoterQr electionId={electionId} userId={voter.user_id} email={voter.email} />
++                  <form action={revokeEligibility}>
++                    <input type="hidden" name="election_id" value={electionId} />
++                    <input type="hidden" name="user_id" value={voter.user_id} />
++                    <ConfirmSubmitButton
++                      className="button button-danger"
++                      message={`Remove ${voter.email} from the eligible list?`}
++                    >
++                      Remove
++                    </ConfirmSubmitButton>
++                  </form>
++                </div>
++              )}
++            </li>
++          ))}
++        </ul>
++      )}
++    </details>
++  );
++}
+diff --git a/frontend/app/admin/voter-qr.tsx b/frontend/app/admin/voter-qr.tsx
+new file mode 100644
+index 0000000..384a400
+--- /dev/null
++++ b/frontend/app/admin/voter-qr.tsx
+@@ -0,0 +1,63 @@
++"use client";
++
++import { useState, useTransition } from "react";
++import { createVoterQr } from "@/app/actions";
++import type { VoterQrResult } from "@/app/actions";
++
++export function VoterQr({
++  electionId,
++  userId,
++  email,
++}: {
++  electionId: string;
++  userId: string;
++  email: string;
++}) {
++  const [result, setResult] = useState<VoterQrResult | null>(null);
++  const [pending, startTransition] = useTransition();
++
++  function generate() {
++    startTransition(async () => {
++      setResult(await createVoterQr(electionId, userId));
++    });
++  }
++
++  return (
++    <div className="voter-qr">
++      <button
++        className="button button-secondary"
++        disabled={pending}
++        onClick={generate}
++        type="button"
++      >
++        {pending ? "Creating…" : result?.ok ? "New QR" : "Login QR"}
++      </button>
++      {result && !result.ok && (
++        <p className="form-message error-message" role="alert">{result.message}</p>
++      )}
++      {result?.ok && (
++        <div className="qr-box">
++          {/* eslint-disable-next-line @next/next/no-img-element */}
++          <img src={result.qrDataUrl} alt={`Login QR code for ${email}`} width={240} height={240} />
++          <p className="muted">
++            For <strong>{email}</strong>. Single use, expires in{" "}
++            {Math.round(result.expiresInSeconds / 60)} minutes. A new QR cancels this one.
++          </p>
++          {result.unreachableFromPhone && (
++            <p className="form-message error-message">
++              This link points to localhost, which a phone cannot open. Set
++              PUBLIC_APP_URL to an address the phone can reach.
++            </p>
++          )}
++          <button
++            className="button button-secondary"
++            onClick={() => setResult(null)}
++            type="button"
++          >
++            Hide QR
++          </button>
++        </div>
++      )}
++    </div>
++  );
++}
+diff --git a/frontend/app/globals.css b/frontend/app/globals.css
+index 808df83..98b015e 100644
+--- a/frontend/app/globals.css
++++ b/frontend/app/globals.css
+@@ -703,3 +703,63 @@ code {
+     margin-left: 0;
+   }
+ }
++
++/* Admin voter list and login QR */
++.voter-management {
++  margin-top: 12px;
++}
++
++.voter-add-form {
++  display: flex;
++  flex-wrap: wrap;
++  gap: 12px;
++  align-items: flex-end;
++  margin: 12px 0;
++}
++
++.voter-add-form label {
++  flex: 1 1 240px;
++}
++
++.voter-list {
++  list-style: none;
++  margin: 12px 0 0;
++  padding: 0;
++}
++
++.voter-row {
++  display: flex;
++  flex-wrap: wrap;
++  gap: 12px;
++  align-items: flex-start;
++  justify-content: space-between;
++  padding: 12px 0;
++  border-top: 1px solid var(--line);
++}
++
++.voter-identity {
++  display: flex;
++  flex-wrap: wrap;
++  gap: 10px;
++  align-items: center;
++}
++
++.voter-actions {
++  display: flex;
++  flex-wrap: wrap;
++  gap: 8px;
++  align-items: flex-start;
++}
++
++.qr-box {
++  margin-top: 10px;
++  padding: 12px;
++  max-width: 280px;
++  border: 1px solid var(--line);
++  border-radius: 8px;
++  background: var(--white);
++  display: grid;
++  gap: 8px;
++  justify-items: center;
++  text-align: center;
++}
+diff --git a/frontend/app/login/login-form.tsx b/frontend/app/login/login-form.tsx
+index 6c84658..0dd2eb7 100644
+--- a/frontend/app/login/login-form.tsx
++++ b/frontend/app/login/login-form.tsx
+@@ -1,6 +1,6 @@
+ "use client";
+ 
+-import { FormEvent, useState } from "react";
++import { FormEvent, useEffect, useRef, useState } from "react";
+ import { useRouter } from "next/navigation";
+ 
+ type ApiError = { error?: string };
+@@ -10,7 +10,7 @@ async function requestError(response: Response) {
+   return payload.error || `Request failed (${response.status})`;
+ }
+ 
+-export function LoginForm() {
++export function LoginForm({ qrToken }: { qrToken?: string }) {
+   const router = useRouter();
+   const [email, setEmail] = useState("");
+   const [password, setPassword] = useState("");
+@@ -18,6 +18,35 @@ export function LoginForm() {
+   const [otpRequired, setOtpRequired] = useState(false);
+   const [busy, setBusy] = useState(false);
+   const [message, setMessage] = useState("");
++  const [qrFailed, setQrFailed] = useState(false);
++  const qrStarted = useRef(false);
++  const scanMode = Boolean(qrToken);
++
++  // A scanned QR replaces the password step: redeem the token, which starts the
++  // email OTP challenge, then fall through to the normal one-time-code form.
++  useEffect(() => {
++    if (!qrToken || qrStarted.current) return;
++    qrStarted.current = true;
++    window.history.replaceState(null, "", "/scan"); // keep the token out of the address bar
++    (async () => {
++      setBusy(true);
++      try {
++        const response = await fetch("/api/login/qr", {
++          method: "POST",
++          headers: { "content-type": "application/json" },
++          body: JSON.stringify({ token: qrToken }),
++        });
++        if (!response.ok) throw new Error(await requestError(response));
++        setOtpRequired(true);
++        setMessage("QR code accepted. Enter the six-digit code to finish signing in.");
++      } catch (error) {
++        setQrFailed(true);
++        setMessage(error instanceof Error ? error.message : "Unable to use this QR code.");
++      } finally {
++        setBusy(false);
++      }
++    })();
++  }, [qrToken]);
+ 
+   async function startLogin(event: FormEvent<HTMLFormElement>) {
+     event.preventDefault();
+@@ -78,7 +107,14 @@ export function LoginForm() {
+ 
+   return (
+     <div className="form-stack">
+-      {!otpRequired ? (
++      {scanMode && !otpRequired ? (
++        <>
++          {busy && <p className="muted">Checking your QR code…</p>}
++          {qrFailed && (
++            <a className="text-link" href="/login">Sign in with email and password instead</a>
++          )}
++        </>
++      ) : !otpRequired ? (
+         <form className="form-stack" onSubmit={startLogin}>
+           <label>
+             Email
+diff --git a/frontend/app/scan/page.tsx b/frontend/app/scan/page.tsx
+new file mode 100644
+index 0000000..93d5bf9
+--- /dev/null
++++ b/frontend/app/scan/page.tsx
+@@ -0,0 +1,30 @@
++import { LoginForm } from "../login/login-form";
++
++export default async function ScanPage({
++  searchParams,
++}: {
++  searchParams: Promise<{ token?: string }>;
++}) {
++  const { token } = await searchParams;
++  return (
++    <main className="auth-shell">
++      <section className="auth-card">
++        <p className="eyebrow">SECURE ELECTIONS</p>
++        <h1>Voter sign-in</h1>
++        {token ? (
++          <>
++            <p className="muted">Your QR code identifies you. One more step to confirm it is you.</p>
++            <LoginForm qrToken={token} />
++          </>
++        ) : (
++          <>
++            <p className="muted">
++              This page opens when you scan the QR code from your election administrator.
++            </p>
++            <a className="text-link auth-link" href="/login">Go to sign in</a>
++          </>
++        )}
++      </section>
++    </main>
++  );
++}
+diff --git a/frontend/lib/backend.ts b/frontend/lib/backend.ts
+index 4bddbdc..7fea657 100644
+--- a/frontend/lib/backend.ts
++++ b/frontend/lib/backend.ts
+@@ -71,6 +71,19 @@ export async function getAdminCandidates(electionId: string) {
+   return readApiResponse<{ candidates: Candidate[] }>(response);
+ }
+ 
++export type VoterStatus = {
++  user_id: string;
++  email: string;
++  has_voted: boolean;
++};
++
++export async function getVoters(electionId: string) {
++  const response = await backendRequest(
++    `/api/admin/elections/${encodeURIComponent(electionId)}/voters`,
++  );
++  return readApiResponse<{ voters: VoterStatus[] }>(response);
++}
++
+ export async function getSessionUser() {
+   const response = await backendRequest("/api/me");
+   return readApiResponse<{ user: SessionUser }>(response);
+diff --git a/frontend/package-lock.json b/frontend/package-lock.json
+index 8279437..1641664 100644
+--- a/frontend/package-lock.json
++++ b/frontend/package-lock.json
+@@ -8,7 +8,9 @@
+       "name": "e-voting-frontend",
+       "version": "1.0.0",
+       "dependencies": {
++        "@types/qrcode": "^1.5.6",
+         "next": "^15.5.0",
++        "qrcode": "^1.5.4",
+         "react": "^19.1.0",
+         "react-dom": "^19.1.0"
+       },
+@@ -677,12 +679,20 @@
+       "version": "22.20.5",
+       "resolved": "https://registry.npmjs.org/@types/node/-/node-22.20.5.tgz",
+       "integrity": "sha512-U2+DNr+wSjpsTS/wZGYHq7GcwfuSmKiKvoPvK22zwTlRhU91yOniN4qRR5KhIjvif7ysw/dz/hKmfDH0Ris4aA==",
+-      "dev": true,
+       "license": "MIT",
+       "dependencies": {
+         "undici-types": "~6.21.0"
+       }
+     },
++    "node_modules/@types/qrcode": {
++      "version": "1.5.6",
++      "resolved": "https://registry.npmjs.org/@types/qrcode/-/qrcode-1.5.6.tgz",
++      "integrity": "sha512-te7NQcV2BOvdj2b1hCAHzAoMNuj65kNBMz0KBaxM6c3VGBOhU0dURQKOtH8CFNI/dsKkwlv32p26qYQTWoB5bw==",
++      "license": "MIT",
++      "dependencies": {
++        "@types/node": "*"
++      }
++    },
+     "node_modules/@types/react": {
+       "version": "19.3.0",
+       "resolved": "https://registry.npmjs.org/@types/react/-/react-19.3.0.tgz",
+@@ -703,6 +713,39 @@
+         "@types/react": "^19.3.0"
+       }
+     },
++    "node_modules/ansi-regex": {
++      "version": "5.0.1",
++      "resolved": "https://registry.npmjs.org/ansi-regex/-/ansi-regex-5.0.1.tgz",
++      "integrity": "sha512-quJQXlTSUGL2LH9SUXo8VwsY4soanhgo6LNSm84E1LBcE8s3O0wpdiRzyR9z/ZZJMlMWv37qOOb9pdJlMUEKFQ==",
++      "license": "MIT",
++      "engines": {
++        "node": ">=8"
++      }
++    },
++    "node_modules/ansi-styles": {
++      "version": "4.3.0",
++      "resolved": "https://registry.npmjs.org/ansi-styles/-/ansi-styles-4.3.0.tgz",
++      "integrity": "sha512-zbB9rCJAT1rbjiVDb2hqKFHNYLxgtk8NURxZ3IZwD3F6NtxbXZQCnnSi1Lkx+IDohdPlFp222wVALIheZJQSEg==",
++      "license": "MIT",
++      "dependencies": {
++        "color-convert": "^2.0.1"
++      },
++      "engines": {
++        "node": ">=8"
++      },
++      "funding": {
++        "url": "https://github.com/chalk/ansi-styles?sponsor=1"
++      }
++    },
++    "node_modules/camelcase": {
++      "version": "5.3.1",
++      "resolved": "https://registry.npmjs.org/camelcase/-/camelcase-5.3.1.tgz",
++      "integrity": "sha512-L28STB170nwWS63UjtlEOE3dldQApaJXZkOI1uMFfzf3rRuPegHaHesyee+YxQ+W6SvRDQV6UrdOdRiR153wJg==",
++      "license": "MIT",
++      "engines": {
++        "node": ">=6"
++      }
++    },
+     "node_modules/caniuse-lite": {
+       "version": "1.0.30001816",
+       "resolved": "https://registry.npmjs.org/caniuse-lite/-/caniuse-lite-1.0.30001816.tgz",
+@@ -729,6 +772,35 @@
+       "integrity": "sha512-IV3Ou0jSMzZrd3pZ48nLkT9DA7Ag1pnPzaiQhpW7c3RbcqqzvzzVu+L8gfqMp/8IM2MQtSiqaCxrrcfu8I8rMA==",
+       "license": "MIT"
+     },
++    "node_modules/cliui": {
++      "version": "6.0.0",
++      "resolved": "https://registry.npmjs.org/cliui/-/cliui-6.0.0.tgz",
++      "integrity": "sha512-t6wbgtoCXvAzst7QgXxJYqPt0usEfbgQdftEPbLL/cvv6HPE5VgvqCuAIDR0NgU52ds6rFwqrgakNLrHEjCbrQ==",
++      "license": "ISC",
++      "dependencies": {
++        "string-width": "^4.2.0",
++        "strip-ansi": "^6.0.0",
++        "wrap-ansi": "^6.2.0"
++      }
++    },
++    "node_modules/color-convert": {
++      "version": "2.0.1",
++      "resolved": "https://registry.npmjs.org/color-convert/-/color-convert-2.0.1.tgz",
++      "integrity": "sha512-RRECPsj7iu/xb5oKYcsFHSppFNnsj/52OVTRKb4zP5onXwVF3zVmmToNcOfGC+CRDpfK/U584fMg38ZHCaElKQ==",
++      "license": "MIT",
++      "dependencies": {
++        "color-name": "~1.1.4"
++      },
++      "engines": {
++        "node": ">=7.0.0"
++      }
++    },
++    "node_modules/color-name": {
++      "version": "1.1.4",
++      "resolved": "https://registry.npmjs.org/color-name/-/color-name-1.1.4.tgz",
++      "integrity": "sha512-dOy+3AuW3a2wNbZHIuMZpTcgjGuLU/uBL/ubcZF9OXbDo8ff4O8yVp5Bf0efS8uEoYo5q4Fx7dY9OgQGXgAsQA==",
++      "license": "MIT"
++    },
+     "node_modules/csstype": {
+       "version": "3.2.3",
+       "resolved": "https://registry.npmjs.org/csstype/-/csstype-3.2.3.tgz",
+@@ -736,6 +808,15 @@
+       "dev": true,
+       "license": "MIT"
+     },
++    "node_modules/decamelize": {
++      "version": "1.2.0",
++      "resolved": "https://registry.npmjs.org/decamelize/-/decamelize-1.2.0.tgz",
++      "integrity": "sha512-z2S+W9X73hAUUki+N+9Za2lBlun89zigOyGrsax+KUQ6wKW4ZoWpEYBkGhQjwAjjDCkWxhY0VKEhk8wzY7F5cA==",
++      "license": "MIT",
++      "engines": {
++        "node": ">=0.10.0"
++      }
++    },
+     "node_modules/detect-libc": {
+       "version": "2.1.2",
+       "resolved": "https://registry.npmjs.org/detect-libc/-/detect-libc-2.1.2.tgz",
+@@ -746,6 +827,61 @@
+         "node": ">=8"
+       }
+     },
++    "node_modules/dijkstrajs": {
++      "version": "1.0.3",
++      "resolved": "https://registry.npmjs.org/dijkstrajs/-/dijkstrajs-1.0.3.tgz",
++      "integrity": "sha512-qiSlmBq9+BCdCA/L46dw8Uy93mloxsPSbwnm5yrKn2vMPiy8KyAskTF6zuV/j5BMsmOGZDPs7KjU+mjb670kfA==",
++      "license": "MIT"
++    },
++    "node_modules/emoji-regex": {
++      "version": "8.0.0",
++      "resolved": "https://registry.npmjs.org/emoji-regex/-/emoji-regex-8.0.0.tgz",
++      "integrity": "sha512-MSjYzcWNOA0ewAHpz0MxpYFvwg6yjy1NG3xteoqz644VCo/RPgnr1/GGt+ic3iJTzQ8Eu3TdM14SawnVUmGE6A==",
++      "license": "MIT"
++    },
++    "node_modules/find-up": {
++      "version": "4.1.0",
++      "resolved": "https://registry.npmjs.org/find-up/-/find-up-4.1.0.tgz",
++      "integrity": "sha512-PpOwAdQ/YlXQ2vj8a3h8IipDuYRi3wceVQQGYWxNINccq40Anw7BlsEXCMbt1Zt+OLA6Fq9suIpIWD0OsnISlw==",
++      "license": "MIT",
++      "dependencies": {
++        "locate-path": "^5.0.0",
++        "path-exists": "^4.0.0"
++      },
++      "engines": {
++        "node": ">=8"
++      }
++    },
++    "node_modules/get-caller-file": {
++      "version": "2.0.5",
++      "resolved": "https://registry.npmjs.org/get-caller-file/-/get-caller-file-2.0.5.tgz",
++      "integrity": "sha512-DyFP3BM/3YHTQOCUL/w0OZHR0lpKeGrxotcHWcqNEdnltqFwXVfhEBQ94eIo34AfQpo0rGki4cyIiftY06h2Fg==",
++      "license": "ISC",
++      "engines": {
++        "node": "6.* || 8.* || >= 10.*"
++      }
++    },
++    "node_modules/is-fullwidth-code-point": {
++      "version": "3.0.0",
++      "resolved": "https://registry.npmjs.org/is-fullwidth-code-point/-/is-fullwidth-code-point-3.0.0.tgz",
++      "integrity": "sha512-zymm5+u+sCsSWyD9qNaejV3DFvhCKclKdizYaJUuHA83RLjb7nSuGnddCHGv0hk+KY7BMAlsWeK4Ueg6EV6XQg==",
++      "license": "MIT",
++      "engines": {
++        "node": ">=8"
++      }
++    },
++    "node_modules/locate-path": {
++      "version": "5.0.0",
++      "resolved": "https://registry.npmjs.org/locate-path/-/locate-path-5.0.0.tgz",
++      "integrity": "sha512-t7hw9pI+WvuwNJXwk5zVHpyhIqzg2qTlklJOf0mVxGSbe3Fp2VieZcduNYjaLDoy6p9uGpQEGWG87WpMKlNq8g==",
++      "license": "MIT",
++      "dependencies": {
++        "p-locate": "^4.1.0"
++      },
++      "engines": {
++        "node": ">=8"
++      }
++    },
+     "node_modules/nanoid": {
+       "version": "3.3.20",
+       "resolved": "https://registry.npmjs.org/nanoid/-/nanoid-3.3.20.tgz",
+@@ -816,12 +952,66 @@
+         }
+       }
+     },
++    "node_modules/p-limit": {
++      "version": "2.3.0",
++      "resolved": "https://registry.npmjs.org/p-limit/-/p-limit-2.3.0.tgz",
++      "integrity": "sha512-//88mFWSJx8lxCzwdAABTJL2MyWB12+eIY7MDL2SqLmAkeKU9qxRvWuSyTjm3FUmpBEMuFfckAIqEaVGUDxb6w==",
++      "license": "MIT",
++      "dependencies": {
++        "p-try": "^2.0.0"
++      },
++      "engines": {
++        "node": ">=6"
++      },
++      "funding": {
++        "url": "https://github.com/sponsors/sindresorhus"
++      }
++    },
++    "node_modules/p-locate": {
++      "version": "4.1.0",
++      "resolved": "https://registry.npmjs.org/p-locate/-/p-locate-4.1.0.tgz",
++      "integrity": "sha512-R79ZZ/0wAxKGu3oYMlz8jy/kbhsNrS7SKZ7PxEHBgJ5+F2mtFW2fK2cOtBh1cHYkQsbzFV7I+EoRKe6Yt0oK7A==",
++      "license": "MIT",
++      "dependencies": {
++        "p-limit": "^2.2.0"
++      },
++      "engines": {
++        "node": ">=8"
++      }
++    },
++    "node_modules/p-try": {
++      "version": "2.2.0",
++      "resolved": "https://registry.npmjs.org/p-try/-/p-try-2.2.0.tgz",
++      "integrity": "sha512-R4nPAVTAU0B9D35/Gk3uJf/7XYbQcyohSKdvAxIRSNghFl4e71hVoGnBNQz9cWaXxO2I10KTC+3jMdvvoKw6dQ==",
++      "license": "MIT",
++      "engines": {
++        "node": ">=6"
++      }
++    },
++    "node_modules/path-exists": {
++      "version": "4.0.0",
++      "resolved": "https://registry.npmjs.org/path-exists/-/path-exists-4.0.0.tgz",
++      "integrity": "sha512-ak9Qy5Q7jYb2Wwcey5Fpvg2KoAc/ZIhLSLOSBmRmygPsGwkVVt0fZa0qrtMz+m6tJTAHfZQ8FnmB4MG4LWy7/w==",
++      "license": "MIT",
++      "engines": {
++        "node": ">=8"
++      }
++    },
+     "node_modules/picocolors": {
+       "version": "1.1.1",
+       "resolved": "https://registry.npmjs.org/picocolors/-/picocolors-1.1.1.tgz",
+       "integrity": "sha512-xceH2snhtb5M9liqDsmEw56le376mTZkEX/jEb/RxNFyegNul7eNslCXP9FDj/Lcu0X8KEyMceP2ntpaHrDEVA==",
+       "license": "ISC"
+     },
++    "node_modules/pngjs": {
++      "version": "5.0.0",
++      "resolved": "https://registry.npmjs.org/pngjs/-/pngjs-5.0.0.tgz",
++      "integrity": "sha512-40QW5YalBNfQo5yRYmiw7Yz6TKKVr3h6970B2YE+3fQpsWcrbj1PzJgxeJ19DRQjhMbKPIuMY8rFaXc8moolVw==",
++      "license": "MIT",
++      "engines": {
++        "node": ">=10.13.0"
++      }
++    },
+     "node_modules/postcss": {
+       "version": "8.5.30",
+       "resolved": "https://registry.npmjs.org/postcss/-/postcss-8.5.30.tgz",
+@@ -850,6 +1040,23 @@
+         "node": "^10 || ^12 || >=14"
+       }
+     },
++    "node_modules/qrcode": {
++      "version": "1.5.4",
++      "resolved": "https://registry.npmjs.org/qrcode/-/qrcode-1.5.4.tgz",
++      "integrity": "sha512-1ca71Zgiu6ORjHqFBDpnSMTR2ReToX4l1Au1VFLyVeBTFavzQnv5JxMFr3ukHVKpSrSA2MCk0lNJSykjUfz7Zg==",
++      "license": "MIT",
++      "dependencies": {
++        "dijkstrajs": "^1.0.1",
++        "pngjs": "^5.0.0",
++        "yargs": "^15.3.1"
++      },
++      "bin": {
++        "qrcode": "bin/qrcode"
++      },
++      "engines": {
++        "node": ">=10.13.0"
++      }
++    },
+     "node_modules/react": {
+       "version": "19.3.0",
+       "resolved": "https://registry.npmjs.org/react/-/react-19.3.0.tgz",
+@@ -871,6 +1078,21 @@
+         "react": "^19.3.0"
+       }
+     },
++    "node_modules/require-directory": {
++      "version": "2.1.1",
++      "resolved": "https://registry.npmjs.org/require-directory/-/require-directory-2.1.1.tgz",
++      "integrity": "sha512-fGxEI7+wsG9xrvdjsrlmL22OMTTiHRwAMroiEeMgq8gzoLC/PQr7RsRDSTLUg/bZAZtF+TVIkHc6/4RIKrui+Q==",
++      "license": "MIT",
++      "engines": {
++        "node": ">=0.10.0"
++      }
++    },
++    "node_modules/require-main-filename": {
++      "version": "2.0.0",
++      "resolved": "https://registry.npmjs.org/require-main-filename/-/require-main-filename-2.0.0.tgz",
++      "integrity": "sha512-NKN5kMDylKuldxYLSUfrbo5Tuzh4hd+2E8NPPX02mZtn1VuREQToYe/ZdlJy+J3uCpfaiGF05e7B8W0iXbQHmg==",
++      "license": "ISC"
++    },
+     "node_modules/scheduler": {
+       "version": "0.28.0",
+       "resolved": "https://registry.npmjs.org/scheduler/-/scheduler-0.28.0.tgz",
+@@ -890,6 +1112,12 @@
+         "node": ">=10"
+       }
+     },
++    "node_modules/set-blocking": {
++      "version": "2.0.0",
++      "resolved": "https://registry.npmjs.org/set-blocking/-/set-blocking-2.0.0.tgz",
++      "integrity": "sha512-KiKBS8AnWGEyLzofFfmvKwpdPzqiy16LvQfK3yv/fVH7Bj13/wl3JSR1J+rfgRE9q7xUJK4qvgS8raSOeLUehw==",
++      "license": "ISC"
++    },
+     "node_modules/sharp": {
+       "version": "0.35.5",
+       "resolved": "https://registry.npmjs.org/sharp/-/sharp-0.35.5.tgz",
+@@ -949,6 +1177,32 @@
+         "node": ">=0.10.0"
+       }
+     },
++    "node_modules/string-width": {
++      "version": "4.2.3",
++      "resolved": "https://registry.npmjs.org/string-width/-/string-width-4.2.3.tgz",
++      "integrity": "sha512-wKyQRQpjJ0sIp62ErSZdGsjMJWsap5oRNihHhu6G7JVO/9jIB6UyevL+tXuOqrng8j/cxKTWyWUwvSTriiZz/g==",
++      "license": "MIT",
++      "dependencies": {
++        "emoji-regex": "^8.0.0",
++        "is-fullwidth-code-point": "^3.0.0",
++        "strip-ansi": "^6.0.1"
++      },
++      "engines": {
++        "node": ">=8"
++      }
++    },
++    "node_modules/strip-ansi": {
++      "version": "6.0.1",
++      "resolved": "https://registry.npmjs.org/strip-ansi/-/strip-ansi-6.0.1.tgz",
++      "integrity": "sha512-Y38VPSHcqkFrCpFnQ9vuSXmquuv5oXOKpGeT6aGrr3o3Gc9AlVa6JBfUSOCnbxGGZF+/0ooI7KrPuUSztUdU5A==",
++      "license": "MIT",
++      "dependencies": {
++        "ansi-regex": "^5.0.1"
++      },
++      "engines": {
++        "node": ">=8"
++      }
++    },
+     "node_modules/styled-jsx": {
+       "version": "5.1.6",
+       "resolved": "https://registry.npmjs.org/styled-jsx/-/styled-jsx-5.1.6.tgz",
+@@ -996,8 +1250,68 @@
+       "version": "6.21.0",
+       "resolved": "https://registry.npmjs.org/undici-types/-/undici-types-6.21.0.tgz",
+       "integrity": "sha512-iwDZqg0QAGrg9Rav5H4n0M64c3mkR59cJ6wQp+7C4nI0gsmExaedaYLNO44eT4AtBBwjbTiGPMlt2Md0T9H9JQ==",
+-      "dev": true,
+       "license": "MIT"
++    },
++    "node_modules/which-module": {
++      "version": "2.0.1",
++      "resolved": "https://registry.npmjs.org/which-module/-/which-module-2.0.1.tgz",
++      "integrity": "sha512-iBdZ57RDvnOR9AGBhML2vFZf7h8vmBjhoaZqODJBFWHVtKkDmKuHai3cx5PgVMrX5YDNp27AofYbAwctSS+vhQ==",
++      "license": "ISC"
++    },
++    "node_modules/wrap-ansi": {
++      "version": "6.2.0",
++      "resolved": "https://registry.npmjs.org/wrap-ansi/-/wrap-ansi-6.2.0.tgz",
++      "integrity": "sha512-r6lPcBGxZXlIcymEu7InxDMhdW0KDxpLgoFLcguasxCaJ/SOIZwINatK9KY/tf+ZrlywOKU0UDj3ATXUBfxJXA==",
++      "license": "MIT",
++      "dependencies": {
++        "ansi-styles": "^4.0.0",
++        "string-width": "^4.1.0",
++        "strip-ansi": "^6.0.0"
++      },
++      "engines": {
++        "node": ">=8"
++      }
++    },
++    "node_modules/y18n": {
++      "version": "4.0.3",
++      "resolved": "https://registry.npmjs.org/y18n/-/y18n-4.0.3.tgz",
++      "integrity": "sha512-JKhqTOwSrqNA1NY5lSztJ1GrBiUodLMmIZuLiDaMRJ+itFd+ABVE8XBjOvIWL+rSqNDC74LCSFmlb/U4UZ4hJQ==",
++      "license": "ISC"
++    },
++    "node_modules/yargs": {
++      "version": "15.4.1",
++      "resolved": "https://registry.npmjs.org/yargs/-/yargs-15.4.1.tgz",
++      "integrity": "sha512-aePbxDmcYW++PaqBsJ+HYUFwCdv4LVvdnhBy78E57PIor8/OVvhMrADFFEDh8DHDFRv/O9i3lPhsENjO7QX0+A==",
++      "license": "MIT",
++      "dependencies": {
++        "cliui": "^6.0.0",
++        "decamelize": "^1.2.0",
++        "find-up": "^4.1.0",
++        "get-caller-file": "^2.0.1",
++        "require-directory": "^2.1.1",
++        "require-main-filename": "^2.0.0",
++        "set-blocking": "^2.0.0",
++        "string-width": "^4.2.0",
++        "which-module": "^2.0.0",
++        "y18n": "^4.0.0",
++        "yargs-parser": "^18.1.2"
++      },
++      "engines": {
++        "node": ">=8"
++      }
++    },
++    "node_modules/yargs-parser": {
++      "version": "18.1.3",
++      "resolved": "https://registry.npmjs.org/yargs-parser/-/yargs-parser-18.1.3.tgz",
++      "integrity": "sha512-o50j0JeToy/4K6OZcaQmW6lyXXKhq7csREXcDwk2omFPJEwUNOVtJKvmDr9EI1fAJZUyZcRF7kxGBWmRXudrCQ==",
++      "license": "ISC",
++      "dependencies": {
++        "camelcase": "^5.0.0",
++        "decamelize": "^1.2.0"
++      },
++      "engines": {
++        "node": ">=6"
++      }
+     }
+   }
+ }
+diff --git a/frontend/package.json b/frontend/package.json
+index 2734ae4..b851e4f 100644
+--- a/frontend/package.json
++++ b/frontend/package.json
+@@ -9,7 +9,9 @@
+     "typecheck": "tsc --noEmit"
+   },
+   "dependencies": {
++    "@types/qrcode": "^1.5.6",
+     "next": "^15.5.0",
++    "qrcode": "^1.5.4",
+     "react": "^19.1.0",
+     "react-dom": "^19.1.0"
+   },

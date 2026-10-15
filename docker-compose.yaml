@@ -44,6 +44,9 @@ services:
         BACKEND_URL: http://backend:3001
     environment:
       BACKEND_URL: http://backend:3001
+      # Address voters' phones use to open the QR login link. localhost will NOT
+      # work from a phone: use this computer's LAN IP or a real domain.
+      PUBLIC_APP_URL: ${PUBLIC_APP_URL:-http://localhost:3000}
       NODE_ENV: production
     ports:
       - "3000:3000"

@@ -141,3 +141,25 @@ generate an invented proof, and the API rejects ballot submissions until a
 verifier is installed. Candidate selections remain in the browser. Do not
 enable ballot submission by substituting generic encryption or by sending a
 plain candidate identifier to the API.
+
+## Voter QR sign-in
+
+Eligible voters sign in by scanning a QR code instead of typing a password.
+
+1. In **Admin → Eligible voters**, add the voter's email, then press **Login QR**
+   next to their name.
+2. The voter scans the QR with their phone. The link is single-use, expires after
+   15 minutes, and is cancelled if the admin creates a new QR for that voter.
+3. Scanning only identifies the voter. They must still enter the six-digit one-time
+   code to finish signing in.
+
+A phone cannot open `localhost`. Before starting, set `PUBLIC_APP_URL` to an address
+the phone can reach (this computer's LAN IP or a domain), for example:
+
+```powershell
+$env:PUBLIC_APP_URL = "http://192.168.1.20:3000"
+docker compose up --build
+```
+
+Note: one-time codes are currently only printed in the backend log in development
+mode; sending them by email still needs to be implemented.

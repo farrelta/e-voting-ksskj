@@ -1,7 +1,9 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { headers } from "next/headers";
 import { redirect } from "next/navigation";
+import QRCode from "qrcode";
 import { backendRequest, readApiResponse } from "@/lib/backend";
 
 function formText(formData: FormData, key: string) {
@@ -179,6 +181,91 @@ export async function submitEncryptedBallot(
     return {
       ok: false,
       message: error instanceof Error ? error.message : "Ballot submission failed.",
+    };
+  }
+}
+
+export async function grantEligibility(formData: FormData) {
+  const electionId = formText(formData, "election_id");
+  try {
+    await sendJson(
+      `/api/admin/elections/${encodeURIComponent(electionId)}/voters`,
+      "POST",
+      { email: formText(formData, "email") },
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Could not add voter.";
+    redirect(`/admin?error=${encodeURIComponent(message)}`);
+  }
+  revalidatePath("/admin");
+  redirect("/admin?notice=Voter%20added%20to%20the%20eligible%20list");
+}
+
+export async function revokeEligibility(formData: FormData) {
+  const electionId = formText(formData, "election_id");
+  const userId = formText(formData, "user_id");
+  try {
+    const response = await backendRequest(
+      `/api/admin/elections/${encodeURIComponent(electionId)}/voters/${encodeURIComponent(userId)}`,
+      { method: "DELETE" },
+    );
+    await readApiResponse(response);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Could not remove voter.";
+    redirect(`/admin?error=${encodeURIComponent(message)}`);
+  }
+  revalidatePath("/admin");
+  redirect("/admin?notice=Voter%20removed%20from%20the%20eligible%20list");
+}
+
+async function publicOrigin() {
+  const configured = process.env.PUBLIC_APP_URL?.trim().replace(/\/+$/, "");
+  if (configured) return configured;
+  const h = await headers();
+  const host = h.get("x-forwarded-host") ?? h.get("host") ?? "localhost:3000";
+  const proto = h.get("x-forwarded-proto") ?? "http";
+  return `${proto}://${host}`;
+}
+
+export type VoterQrResult =
+  | {
+      ok: true;
+      qrDataUrl: string;
+      url: string;
+      expiresInSeconds: number;
+      unreachableFromPhone: boolean;
+    }
+  | { ok: false; message: string };
+
+// Issues a single-use login QR for one eligible voter. The token only appears in
+// the QR/link and is never stored by the frontend.
+export async function createVoterQr(
+  electionId: string,
+  userId: string,
+): Promise<VoterQrResult> {
+  try {
+    const response = await backendRequest(
+      `/api/admin/elections/${encodeURIComponent(electionId)}/voters/${encodeURIComponent(userId)}/qr`,
+      { method: "POST" },
+    );
+    const data = await readApiResponse<{
+      token: string;
+      expires_in_seconds: number;
+    }>(response);
+    const url = `${await publicOrigin()}/scan?token=${encodeURIComponent(data.token)}`;
+    const qrDataUrl = await QRCode.toDataURL(url, { margin: 2, width: 320 });
+    const host = new URL(url).hostname;
+    return {
+      ok: true,
+      qrDataUrl,
+      url,
+      expiresInSeconds: data.expires_in_seconds,
+      unreachableFromPhone: host === "localhost" || host === "127.0.0.1",
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      message: error instanceof Error ? error.message : "Could not create QR code.",
     };
   }
 }

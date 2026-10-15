@@ -20,6 +20,7 @@ type App struct {
 	rdb            *redis.Client
 	sessions       *SessionStore
 	otp            *OTPService
+	qr             *QRService
 	ballotVerifier BallotVerifier
 }
 
@@ -29,6 +30,7 @@ func (a *App) routes() http.Handler {
 	api.HandleFunc("POST /api/login", a.handleLogin)
 	api.HandleFunc("POST /api/login/verify-otp", a.handleVerifyOTP)
 	api.HandleFunc("POST /api/login/resend-otp", a.handleResendOTP)
+	api.HandleFunc("POST /api/login/qr", a.handleQRLogin)
 	api.HandleFunc("GET /api/me", a.handleMe)
 	api.HandleFunc("POST /api/logout", a.handleLogout)
 
@@ -59,6 +61,8 @@ func (a *App) routes() http.Handler {
 		requireAdmin(http.HandlerFunc(a.handleListVoters)))
 	api.Handle("POST /api/admin/elections/{electionId}/voters",
 		requireAdmin(http.HandlerFunc(a.handleGrantEligibility)))
+	api.Handle("POST /api/admin/elections/{electionId}/voters/{userId}/qr",
+		requireAdmin(http.HandlerFunc(a.handleCreateVoterQR)))
 	api.Handle("DELETE /api/admin/elections/{electionId}/voters/{userId}",
 		requireAdmin(http.HandlerFunc(a.handleRevokeEligibility)))
 
@@ -111,6 +115,7 @@ func main() {
 		rdb:      rdb,
 		sessions: newSessionStore(rdb, cfg.IsProduction()),
 		otp:      newOTPService(rdb, cfg.OTPSecret),
+		qr:       newQRService(rdb),
 	}
 
 	srv := &http.Server{

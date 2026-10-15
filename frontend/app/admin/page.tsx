@@ -7,10 +7,16 @@ import {
   updateElectionStatus,
 } from "@/app/actions";
 import { LogoutButton } from "@/app/components/logout-button";
-import { getAdminCandidates, getElections, getSessionUser } from "@/lib/backend";
-import type { Candidate } from "@/lib/backend";
+import {
+  getAdminCandidates,
+  getElections,
+  getSessionUser,
+  getVoters,
+} from "@/lib/backend";
+import type { Candidate, VoterStatus } from "@/lib/backend";
 import { ConfirmSubmitButton } from "./confirm-submit-button";
 import { ElectionForm } from "./election-form";
+import { VoterPanel } from "./voter-panel";
 
 export default async function AdminPage({
   searchParams,
@@ -29,6 +35,13 @@ export default async function AdminPage({
     }),
   );
   const candidatesByElection = new Map<string, Candidate[]>(candidateResults);
+  const voterResults = await Promise.all(
+    elections.map(async (election) => {
+      const { voters } = await getVoters(election.id);
+      return [election.id, voters] as const;
+    }),
+  );
+  const votersByElection = new Map<string, VoterStatus[]>(voterResults);
 
   return (
     <main className="page-shell">
@@ -167,6 +180,11 @@ export default async function AdminPage({
                     <p className="candidate-management-help">Candidate details can be changed until voting starts.</p>
                   ) : <p className="candidate-management-help">Candidate details are locked after voting starts.</p>}
                 </details>
+                <VoterPanel
+                  electionId={election.id}
+                  status={election.status}
+                  voters={votersByElection.get(election.id) ?? []}
+                />
                 <div className="milestone-form">
                   <form action={updateElectionStatus}>
                     <input type="hidden" name="election_id" value={election.id} />
