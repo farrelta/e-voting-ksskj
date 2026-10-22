@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"log"
 	"net/http"
@@ -65,16 +66,25 @@ func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sess := sessionFrom(r)
-	sess.PendingChallengeID = challengeID
-	if err := a.sessions.Save(ctx, w, sess); err != nil {
-		log.Printf("save session: %v", err)
-		writeError(w, http.StatusInternalServerError, "Failed to create login session")
+	if err := a.deliverOTP(ctx, user.Email, otp); err != nil {
+		log.Printf("send login OTP email: %v", err)
+		if cleanupErr := a.otp.DeleteChallenge(ctx, challengeID); cleanupErr != nil {
+			log.Printf("delete unsent OTP challenge: %v", cleanupErr)
+		}
+		writeError(w, http.StatusServiceUnavailable, "Unable to send sign-in code. Please try again later.")
 		return
 	}
 
-	if a.cfg.IsDev() {
-		log.Printf("[DEV ONLY] OTP for %s: %s", user.Email, otp)
+	sess := sessionFrom(r)
+	sess.PendingChallengeID = challengeID
+	sess.PendingUserID = user.ID
+	if err := a.sessions.Save(ctx, w, sess); err != nil {
+		log.Printf("save session: %v", err)
+		if cleanupErr := a.otp.DeleteChallenge(ctx, challengeID); cleanupErr != nil {
+			log.Printf("delete unsaved OTP challenge: %v", cleanupErr)
+		}
+		writeError(w, http.StatusInternalServerError, "Failed to create login session")
+		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -196,10 +206,35 @@ func (a *App) handleResendOTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if a.cfg.IsDev() {
-		log.Printf("[DEV ONLY] Resent OTP: %s", otp)
+	var userEmail string
+	if err := a.db.QueryRow(ctx, `SELECT email FROM evoting.users WHERE id = $1::uuid`, sess.PendingUserID).Scan(&userEmail); err != nil {
+		log.Printf("look up OTP recipient: %v", err)
+		challengeID := sess.PendingChallengeID
+		a.clearPendingLogin(w, r, sess)
+		_ = a.otp.DeleteChallenge(ctx, challengeID)
+		writeError(w, http.StatusInternalServerError, "Failed to resend OTP")
+		return
+	}
+	if err := a.deliverOTP(ctx, userEmail, otp); err != nil {
+		log.Printf("send resent OTP email: %v", err)
+		challengeID := sess.PendingChallengeID
+		_ = a.otp.DeleteChallenge(ctx, challengeID)
+		a.clearPendingLogin(w, r, sess)
+		writeError(w, http.StatusServiceUnavailable, "Unable to send sign-in code. Please start sign-in again later.")
+		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"message": "OTP resent"})
+}
+
+func (a *App) deliverOTP(ctx context.Context, recipient, code string) error {
+	if a.mailer != nil {
+		return a.mailer.SendOTP(ctx, recipient, code)
+	}
+	if a.cfg.IsDev() {
+		log.Printf("[DEV ONLY] OTP for %s: %s", recipient, code)
+		return nil
+	}
+	return errors.New("OTP email delivery is not configured")
 }
 
 // GET /api/me
@@ -225,6 +260,7 @@ func (a *App) handleLogout(w http.ResponseWriter, r *http.Request) {
 // delete req.session.pendingLogin`
 func (a *App) clearPendingLogin(w http.ResponseWriter, r *http.Request, sess *Session) {
 	sess.PendingChallengeID = ""
+	sess.PendingUserID = ""
 	if err := a.sessions.Save(r.Context(), w, sess); err != nil {
 		log.Printf("clear pending login: %v", err)
 	}

@@ -6,7 +6,7 @@ services:
       POSTGRES_PASSWORD: change-me
       POSTGRES_DB: evoting_db
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
       - pgdata:/var/lib/postgresql
       - ./database/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
@@ -28,13 +28,27 @@ services:
       DB_HOST: db
       DB_PORT: "5432"
       REDIS_URL: redis://redis:6379
+      PORT: "3001"
     ports:
-      - "3000:3000"
+      - "3001:3001"
     depends_on:
       db:
         condition: service_healthy
       redis:
         condition: service_started
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        BACKEND_URL: http://backend:3001
+    environment:
+      BACKEND_URL: http://backend:3001
+      NODE_ENV: production
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
 
 volumes:
   pgdata:

@@ -52,3 +52,18 @@ func requireAdmin(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 	})
 }
+
+func requireVoter(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		user := sessionFrom(r).User
+		if user == nil {
+			writeError(w, http.StatusUnauthorized, "Not authenticated")
+			return
+		}
+		if user.Role != "voter" {
+			writeError(w, http.StatusForbidden, "Voter access required")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
