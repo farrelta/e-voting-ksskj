@@ -15,12 +15,13 @@ import (
 )
 
 type App struct {
-	cfg      *Config
-	db       *pgxpool.Pool
-	rdb      *redis.Client
-	sessions *SessionStore
-	otp      *OTPService
-	mailer   OTPMailer
+	cfg            *Config
+	db             *pgxpool.Pool
+	rdb            *redis.Client
+	sessions       *SessionStore
+	otp            *OTPService
+	mailer         OTPMailer
+	ballotVerifier BallotVerifier
 }
 
 func (a *App) routes() http.Handler {
@@ -32,6 +33,31 @@ func (a *App) routes() http.Handler {
 	api.HandleFunc("GET /api/me", a.handleMe)
 	api.HandleFunc("POST /api/logout", a.handleLogout)
 
+	api.Handle("GET /api/elections", requireLogin(http.HandlerFunc(a.handleListElections)))
+	api.Handle("GET /api/elections/{electionId}/candidates",
+		requireVoter(http.HandlerFunc(a.handleListCandidates)))
+	api.Handle("POST /api/elections/{electionId}/registration",
+		requireVoter(http.HandlerFunc(a.handleRegisterVoter)))
+	api.Handle("POST /api/elections/{electionId}/ballots",
+		requireVoter(http.HandlerFunc(a.handleSubmitBallot)))
+	api.HandleFunc("GET /api/verify/{receiptCode}", a.handleVerifyReceipt)
+
+	api.Handle("POST /api/admin/elections",
+		requireAdmin(http.HandlerFunc(a.handleCreateElection)))
+	api.Handle("PUT /api/admin/elections/{electionId}",
+		requireAdmin(http.HandlerFunc(a.handleUpdateElection)))
+	api.Handle("DELETE /api/admin/elections/{electionId}",
+		requireAdmin(http.HandlerFunc(a.handleDeleteElection)))
+	api.Handle("POST /api/admin/elections/{electionId}/status",
+		requireAdmin(http.HandlerFunc(a.handleUpdateElectionStatus)))
+	api.Handle("POST /api/admin/candidates",
+		requireAdmin(http.HandlerFunc(a.handleCreateCandidate)))
+	api.Handle("GET /api/admin/elections/{electionId}/candidates",
+		requireAdmin(http.HandlerFunc(a.handleListElectionCandidates)))
+	api.Handle("PUT /api/admin/candidates/{candidateId}",
+		requireAdmin(http.HandlerFunc(a.handleUpdateCandidate)))
+	api.Handle("DELETE /api/admin/candidates/{candidateId}",
+		requireAdmin(http.HandlerFunc(a.handleDeleteCandidate)))
 	api.Handle("GET /api/admin/elections/{electionId}/voters",
 		requireAdmin(http.HandlerFunc(a.handleListVoters)))
 
