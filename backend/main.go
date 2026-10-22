@@ -20,6 +20,7 @@ type App struct {
 	rdb      *redis.Client
 	sessions *SessionStore
 	otp      *OTPService
+	mailer   OTPMailer
 }
 
 func (a *App) routes() http.Handler {
@@ -61,6 +62,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("config: %v", err)
 	}
+	mailer, err := newSMTPMailer(cfg)
+	if err != nil {
+		log.Fatalf("SMTP configuration: %v", err)
+	}
 
 	ctx := context.Background()
 
@@ -83,6 +88,7 @@ func main() {
 		rdb:      rdb,
 		sessions: newSessionStore(rdb, cfg.IsProduction()),
 		otp:      newOTPService(rdb, cfg.OTPSecret),
+		mailer:   mailer,
 	}
 
 	srv := &http.Server{

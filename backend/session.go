@@ -26,6 +26,7 @@ type SessionUser struct {
 type Session struct {
 	ID                 string       `json:"-"`
 	PendingChallengeID string       `json:"pendingChallengeId,omitempty"`
+	PendingUserID      string       `json:"pendingUserId,omitempty"`
 	User               *SessionUser `json:"user,omitempty"`
 }
 

@@ -166,6 +166,28 @@ func (s *OTPService) CanResend(ctx context.Context, challengeID string) (bool, e
 	return s.rdb.SetNX(ctx, resendKey(challengeID), "1", otpResendCooldown).Result()
 }
 
+func (s *OTPService) DeleteChallenge(ctx context.Context, challengeID string) error {
+	challenge, err := s.loadChallenge(ctx, challengeID)
+	if err != nil {
+		return err
+	}
+	if challenge == nil {
+		return s.rdb.Del(ctx, loginKey(challengeID), attemptsKey(challengeID), resendKey(challengeID)).Err()
+	}
+	return s.rdb.Eval(ctx, `
+		redis.call('DEL', KEYS[1], KEYS[2], KEYS[3])
+		if redis.call('GET', KEYS[4]) == ARGV[1] then
+			redis.call('DEL', KEYS[4])
+		end
+		return 1
+	`, []string{
+		loginKey(challengeID),
+		attemptsKey(challengeID),
+		resendKey(challengeID),
+		activeKey(challenge.UserID),
+	}, challengeID).Err()
+}
+
 func (s *OTPService) Resend(ctx context.Context, challengeID string) (string, error) {
 	challenge, err := s.loadChallenge(ctx, challengeID)
 	if err != nil {

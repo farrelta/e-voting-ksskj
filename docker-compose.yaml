@@ -6,7 +6,7 @@ services:
       POSTGRES_PASSWORD: change-me
       POSTGRES_DB: evoting_db
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
       - pgdata:/var/lib/postgresql
       - ./database/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
