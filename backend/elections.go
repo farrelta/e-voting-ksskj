@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"log"
 	"net/http"
@@ -124,8 +125,23 @@ func (a *App) handleCreateElection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	keys, err := GenerateElectionKeySet()
+	if err != nil {
+		log.Printf("generate election keys: %v", err)
+		writeError(w, http.StatusInternalServerError, "Failed to generate election cryptographic keys")
+		return
+	}
+
+	tx, err := a.db.Begin(r.Context())
+	if err != nil {
+		log.Printf("begin election creation: %v", err)
+		writeError(w, http.StatusInternalServerError, "Failed to create election")
+		return
+	}
+	defer tx.Rollback(r.Context())
+
 	var id string
-	err := a.db.QueryRow(r.Context(), `
+	err = tx.QueryRow(r.Context(), `
 		INSERT INTO evoting.elections (
 			title, description, registration_start, registration_end,
 			voting_start, voting_end, status, created_by
@@ -139,7 +155,32 @@ func (a *App) handleCreateElection(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "Failed to create election")
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]string{"id": id})
+
+	_, err = tx.Exec(r.Context(), `
+		INSERT INTO evoting.election_keys (
+			election_id, kem_public_key, kem_private_key,
+			dsa_public_key, dsa_private_key, he_public_key, he_secret_key_fingerprint
+		) VALUES ($1::uuid, $2, $3, $4, $5, $6, $7)`,
+		id, keys.KEMPublicKey, keys.KEMPrivateKey,
+		keys.DSAPublicKey, keys.DSAPrivateKey,
+		keys.HEPublicKey, keys.HESecretKeyFingerprint,
+	)
+	if err != nil {
+		log.Printf("save election keys: %v", err)
+		writeError(w, http.StatusInternalServerError, "Failed to save election cryptographic keys")
+		return
+	}
+
+	if err := tx.Commit(r.Context()); err != nil {
+		log.Printf("commit election creation: %v", err)
+		writeError(w, http.StatusInternalServerError, "Failed to create election")
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]string{
+		"id":                        id,
+		"he_secret_key":             base64.StdEncoding.EncodeToString(keys.HESecretKey),
+		"he_secret_key_fingerprint": keys.HESecretKeyFingerprint,
+	})
 }
 
 func (a *App) handleUpdateElection(w http.ResponseWriter, r *http.Request) {
@@ -366,7 +407,7 @@ func (a *App) handleListCandidates(w http.ResponseWriter, r *http.Request) {
 		JOIN evoting.voter_eligibility ve ON ve.election_id = e.id
 		WHERE c.election_id = $1::uuid AND ve.user_id = $2::uuid
 			AND e.status = 'active_voting' AND ve.has_voted = FALSE
-		ORDER BY c.name`,
+		ORDER BY c.name, c.id`,
 		electionID, user.ID,
 	)
 	if err != nil {
@@ -380,6 +421,7 @@ func (a *App) handleListCandidates(w http.ResponseWriter, r *http.Request) {
 		ID          string `json:"id"`
 		Name        string `json:"name"`
 		Description string `json:"description"`
+		Index       int    `json:"index"`
 	}
 	candidates := make([]candidate, 0)
 	for rows.Next() {
@@ -389,6 +431,7 @@ func (a *App) handleListCandidates(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "Failed to retrieve candidates")
 			return
 		}
+		item.Index = len(candidates)
 		candidates = append(candidates, item)
 	}
 	if err := rows.Err(); err != nil {
@@ -408,7 +451,7 @@ func (a *App) handleListElectionCandidates(w http.ResponseWriter, r *http.Reques
 	}
 	rows, err := a.db.Query(r.Context(), `
 		SELECT id::text, name, COALESCE(description, '')
-		FROM evoting.candidates WHERE election_id = $1::uuid ORDER BY name`, electionID)
+		FROM evoting.candidates WHERE election_id = $1::uuid ORDER BY name, id`, electionID)
 	if err != nil {
 		log.Printf("list election candidates: %v", err)
 		writeError(w, http.StatusInternalServerError, "Failed to retrieve candidates")
@@ -419,6 +462,7 @@ func (a *App) handleListElectionCandidates(w http.ResponseWriter, r *http.Reques
 		ID          string `json:"id"`
 		Name        string `json:"name"`
 		Description string `json:"description"`
+		Index       int    `json:"index"`
 	}
 	candidates := make([]candidate, 0)
 	for rows.Next() {
@@ -428,6 +472,7 @@ func (a *App) handleListElectionCandidates(w http.ResponseWriter, r *http.Reques
 			writeError(w, http.StatusInternalServerError, "Failed to retrieve candidates")
 			return
 		}
+		item.Index = len(candidates)
 		candidates = append(candidates, item)
 	}
 	if err := rows.Err(); err != nil {

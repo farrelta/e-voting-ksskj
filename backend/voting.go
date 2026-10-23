@@ -12,6 +12,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+
+	"github.com/farrelta/e-voting-ksskj/backend-go/cryptoutil"
 )
 
 type BallotVerifier interface {
@@ -127,14 +129,17 @@ func (a *App) handleSubmitBallot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	encryptedVote, err := base64.StdEncoding.DecodeString(body.EncryptedVote)
-	if err != nil || len(encryptedVote) == 0 || len(encryptedVote) > 256*1024 {
-		writeError(w, http.StatusBadRequest, "Encrypted vote must be valid base64 data no larger than 256 KB")
+	if err != nil || len(encryptedVote) == 0 || len(encryptedVote) > 1024*1024 {
+		writeError(w, http.StatusBadRequest, "Encrypted vote must be valid base64 data no larger than 1 MB")
 		return
 	}
-	proof, err := base64.StdEncoding.DecodeString(body.Proof)
-	if err != nil || len(proof) == 0 || len(proof) > 256*1024 {
-		writeError(w, http.StatusBadRequest, "Proof must be valid base64 data no larger than 256 KB")
-		return
+	var proof []byte
+	if len(body.Proof) > 0 {
+		proof, err = base64.StdEncoding.DecodeString(body.Proof)
+		if err != nil || len(proof) > 1024*1024 {
+			writeError(w, http.StatusBadRequest, "Proof must be valid base64 data no larger than 1 MB")
+			return
+		}
 	}
 	if a.ballotVerifier == nil {
 		writeError(w, http.StatusServiceUnavailable, "Ballot submission is disabled until the election proof verifier is configured")
@@ -143,6 +148,34 @@ func (a *App) handleSubmitBallot(w http.ResponseWriter, r *http.Request) {
 	if err := a.ballotVerifier.Verify(r.Context(), electionID, encryptedVote, proof); err != nil {
 		log.Printf("verify submitted ballot proof: %v", err)
 		writeError(w, http.StatusUnprocessableEntity, "Ballot proof verification failed")
+		return
+	}
+
+	// Fetch KEM and DSA private keys for unwrapping and official server signing
+	var kemPrivKey, dsaPrivKey []byte
+	err = a.db.QueryRow(r.Context(), `
+		SELECT kem_private_key, dsa_private_key
+		FROM evoting.election_keys
+		WHERE election_id = $1::uuid`,
+		electionID,
+	).Scan(&kemPrivKey, &dsaPrivKey)
+	if err != nil {
+		log.Printf("fetch election keys for ballot signing: %v", err)
+		writeError(w, http.StatusInternalServerError, "Failed to process ballot")
+		return
+	}
+
+	rawCT, err := cryptoutil.UnwrapBallot(kemPrivKey, encryptedVote)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "Failed to unwrap ballot")
+		return
+	}
+
+	// Server signs the accepted raw HE ciphertext with the election's DSA private key
+	serverSig, err := cryptoutil.SignCiphertext(dsaPrivKey, rawCT)
+	if err != nil {
+		log.Printf("sign ballot upon receipt: %v", err)
+		writeError(w, http.StatusInternalServerError, "Failed to sign accepted ballot")
 		return
 	}
 
@@ -210,7 +243,7 @@ func (a *App) handleSubmitBallot(w http.ResponseWriter, r *http.Request) {
 			), 'hex')
 		)
 		RETURNING ballot_hash`,
-		electionID, body.ReceiptID, encryptedVote, proof,
+		electionID, body.ReceiptID, rawCT, serverSig,
 	).Scan(&ballotHash)
 	if err != nil {
 		log.Printf("store encrypted ballot: %v", err)
@@ -222,7 +255,10 @@ func (a *App) handleSubmitBallot(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "Failed to submit ballot")
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]string{"ballot_hash": ballotHash})
+	writeJSON(w, http.StatusCreated, map[string]string{
+		"ballot_hash": ballotHash,
+		"proof":       base64.StdEncoding.EncodeToString(serverSig),
+	})
 }
 
 func (a *App) handleVerifyReceipt(w http.ResponseWriter, r *http.Request) {

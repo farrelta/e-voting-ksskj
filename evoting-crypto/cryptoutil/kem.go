@@ -1,6 +1,8 @@
 package cryptoutil
 
 import (
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/rand"
 	"fmt"
 
@@ -63,3 +65,85 @@ func Decapsulate(privKeyBytes, ciphertext []byte) (sharedSecret []byte, err erro
 	}
 	return ss, nil
 }
+
+// ExpectedEnvelopedCiphertextSize is the exact length of a ballot sealed inside an ML-KEM-768 + AES-256-GCM envelope.
+// Format: [ML-KEM-768 ciphertext (1088 bytes)] || [GCM nonce (12 bytes)] || [AES-GCM ciphertext + 16 byte tag]
+const ExpectedEnvelopedCiphertextSize = 1088 + 12 + ExpectedCiphertextSize + 16
+
+// SealEnvelope encapsulates a post-quantum shared secret using kemPubKey,
+// and encrypts the payload using AES-256-GCM.
+func SealEnvelope(kemPubKey, payload []byte) ([]byte, error) {
+	kemCT, sharedSecret, err := Encapsulate(kemPubKey)
+	if err != nil {
+		return nil, fmt.Errorf("kem encapsulate: %w", err)
+	}
+
+	block, err := aes.NewCipher(sharedSecret)
+	if err != nil {
+		return nil, fmt.Errorf("aes cipher: %w", err)
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, fmt.Errorf("aes gcm: %w", err)
+	}
+
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err := rand.Read(nonce); err != nil {
+		return nil, fmt.Errorf("nonce read: %w", err)
+	}
+
+	encrypted := gcm.Seal(nil, nonce, payload, nil)
+
+	envelope := make([]byte, 0, len(kemCT)+len(nonce)+len(encrypted))
+	envelope = append(envelope, kemCT...)
+	envelope = append(envelope, nonce...)
+	envelope = append(envelope, encrypted...)
+	return envelope, nil
+}
+
+// OpenEnvelope decapsulates the shared secret using kemPrivKey, and decrypts the AES-256-GCM envelope.
+func OpenEnvelope(kemPrivKey, envelope []byte) ([]byte, error) {
+	kemCTSize := kemScheme.CiphertextSize() // 1088 bytes
+	nonceSize := 12
+	minSize := kemCTSize + nonceSize + 16
+	if len(envelope) < minSize {
+		return nil, fmt.Errorf("envelope too short: %d < %d", len(envelope), minSize)
+	}
+
+	kemCT := envelope[:kemCTSize]
+	nonce := envelope[kemCTSize : kemCTSize+nonceSize]
+	ciphertext := envelope[kemCTSize+nonceSize:]
+
+	sharedSecret, err := Decapsulate(kemPrivKey, kemCT)
+	if err != nil {
+		return nil, fmt.Errorf("kem decapsulate: %w", err)
+	}
+
+	block, err := aes.NewCipher(sharedSecret)
+	if err != nil {
+		return nil, fmt.Errorf("aes cipher: %w", err)
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, fmt.Errorf("aes gcm: %w", err)
+	}
+
+	payload, err := gcm.Open(nil, nonce, ciphertext, nil)
+	if err != nil {
+		return nil, fmt.Errorf("aes gcm decrypt: %w", err)
+	}
+	return payload, nil
+}
+
+// UnwrapBallot opens the ML-KEM envelope if enveloped, or accepts raw HE ciphertext if already unenveloped.
+func UnwrapBallot(kemPrivKey, data []byte) ([]byte, error) {
+	if len(data) == ExpectedEnvelopedCiphertextSize {
+		return OpenEnvelope(kemPrivKey, data)
+	}
+	if len(data) == ExpectedCiphertextSize {
+		return data, nil
+	}
+	return nil, fmt.Errorf("invalid ballot length: got %d (expected %d for enveloped or %d for raw)",
+		len(data), ExpectedEnvelopedCiphertextSize, ExpectedCiphertextSize)
+}
+

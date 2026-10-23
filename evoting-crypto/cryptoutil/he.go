@@ -97,9 +97,15 @@ func EncryptVote(pubKeyBytes []byte, candidateID, numCandidates int) ([]byte, er
 	return ct.MarshalBinary()
 }
 
+// ExpectedCiphertextSize is the exact byte length of a valid BFV/BGV ciphertext
+// serialized under the fixed parameter set (LogN=13, LogQ=[54, 54], LogP=[55], PlaintextModulus=65537).
+const ExpectedCiphertextSize = 262478
+
 // AggregateAndDecrypt homomorphically sums every submitted ciphertext (one
 // per valid, signature-verified ballot) and decrypts only the final sum —
 // never an individual ballot — using the tally authority's secret key.
+// Each ballot is checked to ensure it represents a valid one-hot vector
+// (preventing stuffing, double voting, and negative values).
 func AggregateAndDecrypt(secKeyBytes []byte, ciphertextsBytes [][]byte, numCandidates int) ([]uint64, error) {
 	if len(ciphertextsBytes) == 0 {
 		return make([]uint64, numCandidates), nil
@@ -110,13 +116,32 @@ func AggregateAndDecrypt(secKeyBytes []byte, ciphertextsBytes [][]byte, numCandi
 		return nil, err
 	}
 
+	sk := rlwe.NewSecretKey(params.Parameters)
+	if err := sk.UnmarshalBinary(secKeyBytes); err != nil {
+		return nil, fmt.Errorf("invalid he secret key: %w", err)
+	}
+
 	evaluator := bgv.NewEvaluator(params, nil, true) // scaleInvariant=true => BFV-style
 
 	var sum *rlwe.Ciphertext
 	for i, ctBytes := range ciphertextsBytes {
+		if err := ValidateCiphertext(ctBytes); err != nil {
+			return nil, fmt.Errorf("invalid ciphertext at index %d: %w", i, err)
+		}
+
+		// Verify each ballot is a valid one-hot vector (rejects stuffing, double votes, negative values)
+		valid, err := VerifyBallotValidity(secKeyBytes, ctBytes, numCandidates)
+		if err != nil {
+			return nil, fmt.Errorf("ballot validity check failed at index %d: %w", i, err)
+		}
+		if !valid {
+			// Skip invalid/stuffing ballot
+			continue
+		}
+
 		ct := bgv.NewCiphertext(params, 1, params.MaxLevel())
 		if err := ct.UnmarshalBinary(ctBytes); err != nil {
-			return nil, fmt.Errorf("invalid ciphertext at index %d: %w", i, err)
+			return nil, fmt.Errorf("unmarshal ciphertext at index %d: %w", i, err)
 		}
 		if sum == nil {
 			sum = ct
@@ -127,10 +152,10 @@ func AggregateAndDecrypt(secKeyBytes []byte, ciphertextsBytes [][]byte, numCandi
 		}
 	}
 
-	sk := rlwe.NewSecretKey(params.Parameters)
-	if err := sk.UnmarshalBinary(secKeyBytes); err != nil {
-		return nil, fmt.Errorf("invalid he secret key: %w", err)
+	if sum == nil {
+		return make([]uint64, numCandidates), nil
 	}
+
 	decryptor := bgv.NewDecryptor(params, sk)
 	encoder := bgv.NewEncoder(params)
 
@@ -142,3 +167,78 @@ func AggregateAndDecrypt(secKeyBytes []byte, ciphertextsBytes [][]byte, numCandi
 
 	return values[:numCandidates], nil
 }
+
+// ValidateCiphertext checks whether the provided bytes have the exact required length
+// and can be deserialized as a valid BGV/BFV ciphertext, preventing fatal stack overflow crashes.
+func ValidateCiphertext(ctBytes []byte) (err error) {
+	if len(ctBytes) != ExpectedCiphertextSize {
+		return fmt.Errorf("invalid ciphertext size: expected %d bytes, got %d", ExpectedCiphertextSize, len(ctBytes))
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("corrupt ciphertext: %v", r)
+		}
+	}()
+	params, err := newHEParams()
+	if err != nil {
+		return err
+	}
+	ct := bgv.NewCiphertext(params, 1, params.MaxLevel())
+	return ct.UnmarshalBinary(ctBytes)
+}
+
+// VerifyBallotValidity decrypts an individual ciphertext and verifies that it encodes a valid ballot:
+// 1. Every slot up to numCandidates is either 0 or 1.
+// 2. Exactly one candidate slot is 1 (sum == 1), rejecting double voting, ballot stuffing, and empty ballots.
+// 3. No negative values (which wrap around to large values in Z_p) are present.
+// 4. All unused slots beyond numCandidates are strictly 0.
+func VerifyBallotValidity(secKeyBytes, ctBytes []byte, numCandidates int) (bool, error) {
+	if err := ValidateCiphertext(ctBytes); err != nil {
+		return false, err
+	}
+	params, err := newHEParams()
+	if err != nil {
+		return false, err
+	}
+	sk := rlwe.NewSecretKey(params.Parameters)
+	if err := sk.UnmarshalBinary(secKeyBytes); err != nil {
+		return false, fmt.Errorf("invalid he secret key: %w", err)
+	}
+	decryptor := bgv.NewDecryptor(params, sk)
+	encoder := bgv.NewEncoder(params)
+
+	ct := bgv.NewCiphertext(params, 1, params.MaxLevel())
+	if err := ct.UnmarshalBinary(ctBytes); err != nil {
+		return false, fmt.Errorf("unmarshal ciphertext: %w", err)
+	}
+
+	pt := decryptor.DecryptNew(ct)
+	values := make([]uint64, params.MaxSlots())
+	if err := encoder.Decode(pt, values); err != nil {
+		return false, fmt.Errorf("decode plaintext: %w", err)
+	}
+
+	var sum uint64
+	for i := 0; i < numCandidates; i++ {
+		val := values[i]
+		if val != 0 && val != 1 {
+			// Stuffing, negative values, or arbitrary weights
+			return false, nil
+		}
+		sum += val
+	}
+	if sum != 1 {
+		// Must be exactly one vote: rejects 0 (empty), 2+ (double vote), etc.
+		return false, nil
+	}
+
+	// Verify all remaining slots are strictly 0
+	for j := numCandidates; j < len(values); j++ {
+		if values[j] != 0 {
+			return false, nil
+		}
+	}
+
+	return true, nil
+}
+

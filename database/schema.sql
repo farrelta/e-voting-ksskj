@@ -271,10 +271,65 @@ ALTER TABLE ONLY evoting.voter_eligibility
 ALTER TABLE ONLY evoting.receipts
     ADD CONSTRAINT fk_receipt_election FOREIGN KEY (election_id) REFERENCES evoting.elections(id);
 
+CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA public;
+
+ALTER TABLE evoting.voter_eligibility
+    ADD COLUMN IF NOT EXISTS receipt_id uuid;
+
+ALTER TABLE evoting.encrypted_ballots
+    ADD COLUMN IF NOT EXISTS receipt_id uuid;
+
+CREATE UNIQUE INDEX IF NOT EXISTS voter_eligibility_receipt_id_key
+    ON evoting.voter_eligibility (receipt_id);
+
+CREATE UNIQUE INDEX IF NOT EXISTS encrypted_ballots_receipt_id_key
+    ON evoting.encrypted_ballots (receipt_id);
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'fk_eligibility_receipt'
+    ) THEN
+        ALTER TABLE evoting.voter_eligibility
+            ADD CONSTRAINT fk_eligibility_receipt
+            FOREIGN KEY (receipt_id) REFERENCES evoting.receipts(id);
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'fk_ballot_receipt'
+    ) THEN
+        ALTER TABLE evoting.encrypted_ballots
+            ADD CONSTRAINT fk_ballot_receipt
+            FOREIGN KEY (receipt_id) REFERENCES evoting.receipts(id);
+    END IF;
+END;
+$$;
+
+CREATE TABLE IF NOT EXISTS evoting.election_keys (
+    election_id uuid PRIMARY KEY REFERENCES evoting.elections(id) ON DELETE CASCADE,
+    kem_public_key bytea NOT NULL,
+    kem_private_key bytea NOT NULL,
+    dsa_public_key bytea NOT NULL,
+    dsa_private_key bytea NOT NULL,
+    he_public_key bytea NOT NULL,
+    he_secret_key_fingerprint character varying(64) NOT NULL,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL
+);
+
+ALTER TABLE evoting.election_keys OWNER TO evoting_app;
+
+CREATE TABLE IF NOT EXISTS evoting.election_results (
+    election_id uuid PRIMARY KEY REFERENCES evoting.elections(id) ON DELETE CASCADE,
+    total_ballots integer NOT NULL DEFAULT 0,
+    results jsonb NOT NULL DEFAULT '[]'::jsonb,
+    tallied_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL
+);
+
+ALTER TABLE evoting.election_results OWNER TO evoting_app;
 
 --
 -- PostgreSQL database dump complete
 --
 
 \unrestrict VhlNnTXQkm1Ne6HLlI4l2rixlaeobNxCDpFyCmbXk5ecUOf0pr1uTFeACcz1jlv
+
 

@@ -40,6 +40,12 @@ func (a *App) routes() http.Handler {
 		requireVoter(http.HandlerFunc(a.handleRegisterVoter)))
 	api.Handle("POST /api/elections/{electionId}/ballots",
 		requireVoter(http.HandlerFunc(a.handleSubmitBallot)))
+	api.Handle("GET /api/elections/{electionId}/keys",
+		requireLogin(http.HandlerFunc(a.handleGetElectionKeys)))
+	api.Handle("POST /api/elections/{electionId}/sign-ballot",
+		requireVoter(http.HandlerFunc(a.handleSignBallot)))
+	api.Handle("GET /api/elections/{electionId}/results",
+		http.HandlerFunc(a.handleGetElectionResults))
 	api.HandleFunc("GET /api/verify/{receiptCode}", a.handleVerifyReceipt)
 
 	api.Handle("POST /api/admin/elections",
@@ -60,6 +66,8 @@ func (a *App) routes() http.Handler {
 		requireAdmin(http.HandlerFunc(a.handleDeleteCandidate)))
 	api.Handle("GET /api/admin/elections/{electionId}/voters",
 		requireAdmin(http.HandlerFunc(a.handleListVoters)))
+	api.Handle("POST /api/admin/elections/{electionId}/tally",
+		requireAdmin(http.HandlerFunc(a.handleTallyElection)))
 
 	if a.cfg.IsDev() {
 		api.HandleFunc("GET /api/redis-test", func(w http.ResponseWriter, r *http.Request) {
@@ -113,8 +121,9 @@ func main() {
 		db:       pool,
 		rdb:      rdb,
 		sessions: newSessionStore(rdb, cfg.IsProduction()),
-		otp:      newOTPService(rdb, cfg.OTPSecret),
-		mailer:   mailer,
+		otp:            newOTPService(rdb, cfg.OTPSecret),
+		mailer:         mailer,
+		ballotVerifier: NewBallotVerifier(pool),
 	}
 
 	srv := &http.Server{
