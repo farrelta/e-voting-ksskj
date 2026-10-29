@@ -88,6 +88,15 @@ Get-Content -Raw database\migrations\001_receipt_ballot_link.sql |
   docker compose exec -T db psql -U evoting_app -d evoting_db
 ```
 
+If your database predates candidate ordering and election keys, also apply
+`002_candidate_position_and_election_keys.sql` the same way (it is safe to
+re-run):
+
+```powershell
+Get-Content -Raw database\migrations\002_candidate_position_and_election_keys.sql |
+  docker compose exec -T db psql -U evoting_app -d evoting_db
+```
+
 Then start or rebuild the remaining services:
 
 ```powershell
@@ -132,3 +141,50 @@ generate an invented proof, and the API rejects ballot submissions until a
 verifier is installed. Candidate selections remain in the browser. Do not
 enable ballot submission by substituting generic encryption or by sending a
 plain candidate identifier to the API.
+
+## Participants and the automatic schedule
+
+**Participants.** In **Admin -> Eligible voters**, paste the participants' email
+addresses (one per line, or separated by commas; names and other spreadsheet
+columns are ignored) and press **Add participants**. Only addresses on
+`ALLOWED_EMAIL_DOMAIN` (default `ugm.ac.id`, subdomains such as `mail.ugm.ac.id`
+included) are accepted; anything else is reported back and not added. People
+without an account get one automatically. These accounts have no password; the
+intended login for them is the campus SSO.
+
+**Schedule.** Opening registration publishes an election. From then on the backend
+opens voting at the voting start time and closes it at the voting end time
+(checked every 5 seconds). A ballot is also rejected outside the voting window even
+if the status says otherwise. Draft elections are never opened automatically.
+
+**Database tests.** The integration tests run only when pointed at a database that
+has `database/schema.sql` loaded:
+
+```powershell
+$env:TEST_DATABASE_URL = "postgres://evoting_app:change-me@localhost:5432/evoting_db"
+cd backend; go test ./...
+```
+
+They create and remove their own rows, but use a development database, not real data.
+
+## Voter QR sign-in
+
+Eligible voters sign in by scanning a QR code instead of typing a password.
+
+1. In **Admin → Eligible voters**, add the voter's email, then press **Login QR**
+   next to their name.
+2. The voter scans the QR with their phone. The link is single-use, expires after
+   15 minutes, and is cancelled if the admin creates a new QR for that voter.
+3. Scanning only identifies the voter. They must still enter the six-digit one-time
+   code to finish signing in.
+
+A phone cannot open `localhost`. Before starting, set `PUBLIC_APP_URL` to an address
+the phone can reach (this computer's LAN IP or a domain), for example:
+
+```powershell
+$env:PUBLIC_APP_URL = "http://192.168.1.20:3000"
+docker compose up --build
+```
+
+The one-time code is emailed through the same SMTP settings as the password login
+(in development without SMTP it is printed in the backend log instead).

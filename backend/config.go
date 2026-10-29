@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"os"
+	"strings"
 
 	"github.com/joho/godotenv"
 )
@@ -23,6 +24,9 @@ type Config struct {
 	SMTPFrom     string
 	Env          string
 	FrontendDir  string
+	// AllowedEmailDomain restricts who can be added to an election's participant
+	// list. Addresses on this domain or any of its subdomains are accepted.
+	AllowedEmailDomain string
 }
 
 func (c *Config) IsDev() bool        { return c.Env == "development" }
@@ -54,6 +58,8 @@ func loadConfig() (*Config, error) {
 		SMTPFrom:     os.Getenv("SMTP_FROM"),
 		Env:          getenv("APP_ENV", "production"),
 		FrontendDir:  getenv("FRONTEND_DIR", "../frontend"),
+		AllowedEmailDomain: strings.ToLower(strings.TrimPrefix(
+			strings.TrimSpace(getenv("ALLOWED_EMAIL_DOMAIN", "ugm.ac.id")), "@")),
 	}
 
 	if cfg.DBName == "" || cfg.DBUser == "" {

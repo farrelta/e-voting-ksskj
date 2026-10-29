@@ -1,5 +1,4 @@
 import Link from "next/link";
-import { registerForElection } from "@/app/actions";
 import { LogoutButton } from "@/app/components/logout-button";
 import {
   getCandidates,
@@ -53,7 +52,7 @@ export default async function DashboardPage({
       <section className="page-heading">
         <p className="eyebrow">VOTER PORTAL</p>
         <h1>Your elections</h1>
-        <p className="muted">Review open elections and manage your voter registration.</p>
+        <p className="muted">Review your elections and cast your ballot when voting is open.</p>
       </section>
       {params.notice && <p className="notice">{params.notice}</p>}
       {params.error && <p className="notice error-message" role="alert">{params.error}</p>}
@@ -83,14 +82,6 @@ export default async function DashboardPage({
                 </div>
               </div>
 
-              {election.status === "registration" && !election.is_registered && (
-                <form action={registerForElection}>
-                  <input type="hidden" name="election_id" value={election.id} />
-                  <button className="button button-primary" type="submit">
-                    Register for this election
-                  </button>
-                </form>
-              )}
               {election.is_registered && election.receipt_code && (
                 <aside className="receipt-panel">
                   <div>
@@ -105,8 +96,10 @@ export default async function DashboardPage({
                   </Link>
                 </aside>
               )}
-              {election.status === "active_voting" && !election.is_registered && (
-                <p className="muted">You are not registered for this election.</p>
+              {!election.is_registered && (
+                <p className="muted">
+                  You are not on the eligible voter list for this election.
+                </p>
               )}
               {election.status === "active_voting" &&
                 election.is_registered &&

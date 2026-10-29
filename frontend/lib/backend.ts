@@ -71,6 +71,19 @@ export async function getAdminCandidates(electionId: string) {
   return readApiResponse<{ candidates: Candidate[] }>(response);
 }
 
+export type VoterStatus = {
+  user_id: string;
+  email: string;
+  has_voted: boolean;
+};
+
+export async function getVoters(electionId: string) {
+  const response = await backendRequest(
+    `/api/admin/elections/${encodeURIComponent(electionId)}/voters`,
+  );
+  return readApiResponse<{ voters: VoterStatus[] }>(response);
+}
+
 export async function getSessionUser() {
   const response = await backendRequest("/api/me");
   return readApiResponse<{ user: SessionUser }>(response);

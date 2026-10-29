@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 
 type ApiError = { error?: string };
@@ -10,7 +10,7 @@ async function requestError(response: Response) {
   return payload.error || `Request failed (${response.status})`;
 }
 
-export function LoginForm() {
+export function LoginForm({ qrToken }: { qrToken?: string }) {
   const router = useRouter();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -18,6 +18,35 @@ export function LoginForm() {
   const [otpRequired, setOtpRequired] = useState(false);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
+  const [qrFailed, setQrFailed] = useState(false);
+  const qrStarted = useRef(false);
+  const scanMode = Boolean(qrToken);
+
+  // A scanned QR replaces the password step: redeem the token, which starts the
+  // email OTP challenge, then fall through to the normal one-time-code form.
+  useEffect(() => {
+    if (!qrToken || qrStarted.current) return;
+    qrStarted.current = true;
+    window.history.replaceState(null, "", "/scan"); // keep the token out of the address bar
+    (async () => {
+      setBusy(true);
+      try {
+        const response = await fetch("/api/login/qr", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ token: qrToken }),
+        });
+        if (!response.ok) throw new Error(await requestError(response));
+        setOtpRequired(true);
+        setMessage("QR code accepted. Enter the six-digit code to finish signing in.");
+      } catch (error) {
+        setQrFailed(true);
+        setMessage(error instanceof Error ? error.message : "Unable to use this QR code.");
+      } finally {
+        setBusy(false);
+      }
+    })();
+  }, [qrToken]);
 
   async function startLogin(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -78,7 +107,14 @@ export function LoginForm() {
 
   return (
     <div className="form-stack">
-      {!otpRequired ? (
+      {scanMode && !otpRequired ? (
+        <>
+          {busy && <p className="muted">Checking your QR code…</p>}
+          {qrFailed && (
+            <a className="text-link" href="/login">Sign in with email and password instead</a>
+          )}
+        </>
+      ) : !otpRequired ? (
         <form className="form-stack" onSubmit={startLogin}>
           <label>
             Email

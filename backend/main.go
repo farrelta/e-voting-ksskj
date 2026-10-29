@@ -20,6 +20,7 @@ type App struct {
 	rdb            *redis.Client
 	sessions       *SessionStore
 	otp            *OTPService
+	qr             *QRService
 	mailer         OTPMailer
 	ballotVerifier BallotVerifier
 }
@@ -30,14 +31,13 @@ func (a *App) routes() http.Handler {
 	api.HandleFunc("POST /api/login", a.handleLogin)
 	api.HandleFunc("POST /api/login/verify-otp", a.handleVerifyOTP)
 	api.HandleFunc("POST /api/login/resend-otp", a.handleResendOTP)
+	api.HandleFunc("POST /api/login/qr", a.handleQRLogin)
 	api.HandleFunc("GET /api/me", a.handleMe)
 	api.HandleFunc("POST /api/logout", a.handleLogout)
 
 	api.Handle("GET /api/elections", requireLogin(http.HandlerFunc(a.handleListElections)))
 	api.Handle("GET /api/elections/{electionId}/candidates",
 		requireVoter(http.HandlerFunc(a.handleListCandidates)))
-	api.Handle("POST /api/elections/{electionId}/registration",
-		requireVoter(http.HandlerFunc(a.handleRegisterVoter)))
 	api.Handle("POST /api/elections/{electionId}/ballots",
 		requireVoter(http.HandlerFunc(a.handleSubmitBallot)))
 	api.HandleFunc("GET /api/verify/{receiptCode}", a.handleVerifyReceipt)
@@ -60,6 +60,14 @@ func (a *App) routes() http.Handler {
 		requireAdmin(http.HandlerFunc(a.handleDeleteCandidate)))
 	api.Handle("GET /api/admin/elections/{electionId}/voters",
 		requireAdmin(http.HandlerFunc(a.handleListVoters)))
+	api.Handle("POST /api/admin/elections/{electionId}/voters",
+		requireAdmin(http.HandlerFunc(a.handleGrantEligibility)))
+	api.Handle("POST /api/admin/elections/{electionId}/voters/bulk",
+		requireAdmin(http.HandlerFunc(a.handleBulkAddParticipants)))
+	api.Handle("POST /api/admin/elections/{electionId}/voters/{userId}/qr",
+		requireAdmin(http.HandlerFunc(a.handleCreateVoterQR)))
+	api.Handle("DELETE /api/admin/elections/{electionId}/voters/{userId}",
+		requireAdmin(http.HandlerFunc(a.handleRevokeEligibility)))
 
 	if a.cfg.IsDev() {
 		api.HandleFunc("GET /api/redis-test", func(w http.ResponseWriter, r *http.Request) {
@@ -114,6 +122,7 @@ func main() {
 		rdb:      rdb,
 		sessions: newSessionStore(rdb, cfg.IsProduction()),
 		otp:      newOTPService(rdb, cfg.OTPSecret),
+		qr:       newQRService(rdb),
 		mailer:   mailer,
 	}
 
@@ -123,10 +132,16 @@ func main() {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
+	// Opens and closes elections by the clock (see scheduler.go).
+	schedulerCtx, stopScheduler := context.WithCancel(ctx)
+	defer stopScheduler()
+	go app.runElectionScheduler(schedulerCtx)
+
 	go func() {
 		stop := make(chan os.Signal, 1)
 		signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 		<-stop
+		stopScheduler()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		_ = srv.Shutdown(shutdownCtx)

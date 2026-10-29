@@ -14,6 +14,7 @@ SET transaction_timeout = 0;
 SET client_encoding = 'UTF8';
 SET standard_conforming_strings = on;
 SELECT pg_catalog.set_config('search_path', '', false);
+CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA public;
 SET check_function_bodies = false;
 SET xmloption = content;
 SET client_min_messages = warning;
@@ -52,7 +53,8 @@ CREATE TABLE evoting.candidates (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
     election_id uuid NOT NULL,
     name character varying NOT NULL,
-    description text
+    description text,
+    position integer NOT NULL
 );
 
 
@@ -72,11 +74,51 @@ CREATE TABLE evoting.elections (
     voting_end timestamp with time zone NOT NULL,
     status character varying NOT NULL,
     created_by uuid NOT NULL,
-    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    he_public_key bytea,
+    dsa_public_key bytea,
+    kem_public_key bytea
 );
 
 
 ALTER TABLE evoting.elections OWNER TO evoting_app;
+
+--
+-- Name: election_secrets; Type: TABLE; Schema: evoting; Owner: evoting_app
+-- The *_enc columns must hold ciphertext (encrypted at rest by the security layer).
+--
+
+CREATE TABLE evoting.election_secrets (
+    election_id uuid NOT NULL,
+    he_secret_key_enc bytea NOT NULL,
+    dsa_private_key_enc bytea NOT NULL,
+    kem_private_key_enc bytea NOT NULL,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL
+);
+
+
+ALTER TABLE evoting.election_secrets OWNER TO evoting_app;
+
+--
+-- Name: assign_candidate_position(); Type: FUNCTION; Schema: evoting; Owner: evoting_app
+--
+
+CREATE FUNCTION evoting.assign_candidate_position() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    IF NEW.position IS NULL THEN
+        SELECT COALESCE(MAX(position) + 1, 0)
+        INTO NEW.position
+        FROM evoting.candidates
+        WHERE election_id = NEW.election_id;
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+
+ALTER FUNCTION evoting.assign_candidate_position() OWNER TO evoting_app;
 
 --
 -- Name: encrypted_ballots; Type: TABLE; Schema: evoting; Owner: evoting_app
@@ -85,6 +127,7 @@ ALTER TABLE evoting.elections OWNER TO evoting_app;
 CREATE TABLE evoting.encrypted_ballots (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
     election_id uuid NOT NULL,
+    receipt_id uuid,
     encrypted_vote bytea NOT NULL,
     proof bytea,
     ballot_hash character varying NOT NULL
@@ -130,6 +173,7 @@ CREATE TABLE evoting.voter_eligibility (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
     election_id uuid NOT NULL,
     user_id uuid NOT NULL,
+    receipt_id uuid,
     has_voted boolean DEFAULT false NOT NULL
 );
 
@@ -167,6 +211,9 @@ ALTER TABLE ONLY evoting.encrypted_ballots
 ALTER TABLE ONLY evoting.encrypted_ballots
     ADD CONSTRAINT encrypted_ballots_pkey PRIMARY KEY (id);
 
+ALTER TABLE ONLY evoting.encrypted_ballots
+    ADD CONSTRAINT encrypted_ballots_receipt_id_key UNIQUE (receipt_id);
+
 
 --
 -- Name: receipts receipts_pkey; Type: CONSTRAINT; Schema: evoting; Owner: evoting_app
@@ -182,6 +229,29 @@ ALTER TABLE ONLY evoting.receipts
 
 ALTER TABLE ONLY evoting.receipts
     ADD CONSTRAINT receipts_receipt_code_key UNIQUE (receipt_code);
+
+
+--
+-- Name: election_secrets election_secrets_pkey; Type: CONSTRAINT; Schema: evoting; Owner: evoting_app
+--
+
+ALTER TABLE ONLY evoting.election_secrets
+    ADD CONSTRAINT election_secrets_pkey PRIMARY KEY (election_id);
+
+
+--
+-- Name: candidates unique_candidate_position; Type: CONSTRAINT; Schema: evoting; Owner: evoting_app
+--
+
+ALTER TABLE ONLY evoting.candidates
+    ADD CONSTRAINT unique_candidate_position UNIQUE (election_id, position);
+
+
+--
+-- Name: candidates candidates_assign_position; Type: TRIGGER; Schema: evoting; Owner: evoting_app
+--
+
+CREATE TRIGGER candidates_assign_position BEFORE INSERT ON evoting.candidates FOR EACH ROW EXECUTE FUNCTION evoting.assign_candidate_position();
 
 
 --
@@ -223,6 +293,9 @@ ALTER TABLE ONLY evoting.users
 ALTER TABLE ONLY evoting.voter_eligibility
     ADD CONSTRAINT voter_eligibility_pkey PRIMARY KEY (id);
 
+ALTER TABLE ONLY evoting.voter_eligibility
+    ADD CONSTRAINT voter_eligibility_receipt_id_key UNIQUE (receipt_id);
+
 
 --
 -- Name: encrypted_ballots fk_ballot_election; Type: FK CONSTRAINT; Schema: evoting; Owner: evoting_app
@@ -230,6 +303,9 @@ ALTER TABLE ONLY evoting.voter_eligibility
 
 ALTER TABLE ONLY evoting.encrypted_ballots
     ADD CONSTRAINT fk_ballot_election FOREIGN KEY (election_id) REFERENCES evoting.elections(id);
+
+ALTER TABLE ONLY evoting.encrypted_ballots
+    ADD CONSTRAINT fk_ballot_receipt FOREIGN KEY (receipt_id) REFERENCES evoting.receipts(id);
 
 
 --
@@ -263,6 +339,17 @@ ALTER TABLE ONLY evoting.voter_eligibility
 ALTER TABLE ONLY evoting.voter_eligibility
     ADD CONSTRAINT fk_eligibility_user FOREIGN KEY (user_id) REFERENCES evoting.users(id);
 
+ALTER TABLE ONLY evoting.voter_eligibility
+    ADD CONSTRAINT fk_eligibility_receipt FOREIGN KEY (receipt_id) REFERENCES evoting.receipts(id);
+
+
+--
+-- Name: election_secrets fk_secrets_election; Type: FK CONSTRAINT; Schema: evoting; Owner: evoting_app
+--
+
+ALTER TABLE ONLY evoting.election_secrets
+    ADD CONSTRAINT fk_secrets_election FOREIGN KEY (election_id) REFERENCES evoting.elections(id) ON DELETE CASCADE;
+
 
 --
 -- Name: receipts fk_receipt_election; Type: FK CONSTRAINT; Schema: evoting; Owner: evoting_app
@@ -277,4 +364,3 @@ ALTER TABLE ONLY evoting.receipts
 --
 
 \unrestrict VhlNnTXQkm1Ne6HLlI4l2rixlaeobNxCDpFyCmbXk5ecUOf0pr1uTFeACcz1jlv
-
