@@ -156,13 +156,26 @@ func (a *App) handleCreateElection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	encKEMPriv, err := encryptPrivateKey(keys.KEMPrivateKey, a.cfg.MasterKey)
+	if err != nil {
+		log.Printf("encrypt kem private key: %v", err)
+		writeError(w, http.StatusInternalServerError, "Failed to secure election cryptographic keys")
+		return
+	}
+	encDSAPriv, err := encryptPrivateKey(keys.DSAPrivateKey, a.cfg.MasterKey)
+	if err != nil {
+		log.Printf("encrypt dsa private key: %v", err)
+		writeError(w, http.StatusInternalServerError, "Failed to secure election cryptographic keys")
+		return
+	}
+
 	_, err = tx.Exec(r.Context(), `
 		INSERT INTO evoting.election_keys (
 			election_id, kem_public_key, kem_private_key,
 			dsa_public_key, dsa_private_key, he_public_key, he_secret_key_fingerprint
 		) VALUES ($1::uuid, $2, $3, $4, $5, $6, $7)`,
-		id, keys.KEMPublicKey, keys.KEMPrivateKey,
-		keys.DSAPublicKey, keys.DSAPrivateKey,
+		id, keys.KEMPublicKey, encKEMPriv,
+		keys.DSAPublicKey, encDSAPriv,
 		keys.HEPublicKey, keys.HESecretKeyFingerprint,
 	)
 	if err != nil {

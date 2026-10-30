@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"time"
@@ -18,9 +19,11 @@ import (
 
 // ensureElectionKeys ensures that an election has cryptographic keys, generating them if missing.
 // Note: he_secret_key is NEVER stored in the database; only its SHA-256 fingerprint is persisted.
+// Private keys (kem_private_key, dsa_private_key) are encrypted at rest with the master key.
 func (a *App) ensureElectionKeys(r *http.Request, electionID string) (*ElectionKeySet, error) {
 	ctx := r.Context()
 	var keys ElectionKeySet
+	var storedKEMPriv, storedDSAPriv []byte
 	err := a.db.QueryRow(ctx, `
 		SELECT kem_public_key, kem_private_key,
 		       dsa_public_key, dsa_private_key,
@@ -29,11 +32,21 @@ func (a *App) ensureElectionKeys(r *http.Request, electionID string) (*ElectionK
 		WHERE election_id = $1::uuid`,
 		electionID,
 	).Scan(
-		&keys.KEMPublicKey, &keys.KEMPrivateKey,
-		&keys.DSAPublicKey, &keys.DSAPrivateKey,
+		&keys.KEMPublicKey, &storedKEMPriv,
+		&keys.DSAPublicKey, &storedDSAPriv,
 		&keys.HEPublicKey, &keys.HESecretKeyFingerprint,
 	)
 	if err == nil {
+		kemPriv, err := decryptPrivateKey(storedKEMPriv, a.cfg.MasterKey)
+		if err != nil {
+			return nil, fmt.Errorf("decrypt kem private key: %w", err)
+		}
+		dsaPriv, err := decryptPrivateKey(storedDSAPriv, a.cfg.MasterKey)
+		if err != nil {
+			return nil, fmt.Errorf("decrypt dsa private key: %w", err)
+		}
+		keys.KEMPrivateKey = kemPriv
+		keys.DSAPrivateKey = dsaPriv
 		return &keys, nil
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
@@ -54,14 +67,23 @@ func (a *App) ensureElectionKeys(r *http.Request, electionID string) (*ElectionK
 		return nil, err
 	}
 
+	encKEMPriv, err := encryptPrivateKey(newKeys.KEMPrivateKey, a.cfg.MasterKey)
+	if err != nil {
+		return nil, fmt.Errorf("encrypt kem private key: %w", err)
+	}
+	encDSAPriv, err := encryptPrivateKey(newKeys.DSAPrivateKey, a.cfg.MasterKey)
+	if err != nil {
+		return nil, fmt.Errorf("encrypt dsa private key: %w", err)
+	}
+
 	_, err = a.db.Exec(ctx, `
 		INSERT INTO evoting.election_keys (
 			election_id, kem_public_key, kem_private_key,
 			dsa_public_key, dsa_private_key, he_public_key, he_secret_key_fingerprint
 		) VALUES ($1::uuid, $2, $3, $4, $5, $6, $7)
 		ON CONFLICT (election_id) DO NOTHING`,
-		electionID, newKeys.KEMPublicKey, newKeys.KEMPrivateKey,
-		newKeys.DSAPublicKey, newKeys.DSAPrivateKey,
+		electionID, newKeys.KEMPublicKey, encKEMPriv,
+		newKeys.DSAPublicKey, encDSAPriv,
 		newKeys.HEPublicKey, newKeys.HESecretKeyFingerprint,
 	)
 	if err != nil {

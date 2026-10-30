@@ -123,7 +123,7 @@ func main() {
 		sessions: newSessionStore(rdb, cfg.IsProduction()),
 		otp:            newOTPService(rdb, cfg.OTPSecret),
 		mailer:         mailer,
-		ballotVerifier: NewBallotVerifier(pool),
+		ballotVerifier: NewBallotVerifier(pool, cfg.MasterKey),
 	}
 
 	srv := &http.Server{

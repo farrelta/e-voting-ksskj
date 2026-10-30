@@ -1,6 +1,9 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"os"
 
@@ -16,6 +19,7 @@ type Config struct {
 	DBPassword   string
 	RedisURL     string
 	OTPSecret    string
+	MasterKey    []byte
 	SMTPHost     string
 	SMTPPort     string
 	SMTPUser     string
@@ -71,5 +75,31 @@ func loadConfig() (*Config, error) {
 	if cfg.SMTPHost == "" && !cfg.IsDev() {
 		return nil, errors.New("SMTP_HOST and SMTP_FROM are required outside development")
 	}
+
+	masterKeyRaw := os.Getenv("MASTER_KEY")
+	if masterKeyRaw == "" {
+		if cfg.IsDev() {
+			h := sha256.Sum256([]byte("dev-master-key:" + cfg.OTPSecret))
+			cfg.MasterKey = h[:]
+		} else {
+			return nil, errors.New("MASTER_KEY must be set outside development")
+		}
+	} else {
+		if len(masterKeyRaw) == 64 {
+			if decoded, err := hex.DecodeString(masterKeyRaw); err == nil && len(decoded) == 32 {
+				cfg.MasterKey = decoded
+			}
+		}
+		if len(cfg.MasterKey) == 0 && len(masterKeyRaw) == 44 {
+			if decoded, err := base64.StdEncoding.DecodeString(masterKeyRaw); err == nil && len(decoded) == 32 {
+				cfg.MasterKey = decoded
+			}
+		}
+		if len(cfg.MasterKey) == 0 {
+			h := sha256.Sum256([]byte(masterKeyRaw))
+			cfg.MasterKey = h[:]
+		}
+	}
+
 	return cfg, nil
 }

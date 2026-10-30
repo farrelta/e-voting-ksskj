@@ -50,11 +50,12 @@ func GenerateElectionKeySet() (*ElectionKeySet, error) {
 }
 
 type DefaultBallotVerifier struct {
-	db *pgxpool.Pool
+	db        *pgxpool.Pool
+	masterKey []byte
 }
 
-func NewBallotVerifier(db *pgxpool.Pool) *DefaultBallotVerifier {
-	return &DefaultBallotVerifier{db: db}
+func NewBallotVerifier(db *pgxpool.Pool, masterKey []byte) *DefaultBallotVerifier {
+	return &DefaultBallotVerifier{db: db, masterKey: masterKey}
 }
 
 func (v *DefaultBallotVerifier) Verify(ctx context.Context, electionID string, encryptedVote, proof []byte) error {
@@ -63,19 +64,29 @@ func (v *DefaultBallotVerifier) Verify(ctx context.Context, electionID string, e
 	}
 
 	// 1. Fetch election keys (KEM private key for unwrapping envelope, DSA public key for signature check)
-	var kemPrivKey, dsaPubKey []byte
+	var storedKEMPriv, dsaPubKey []byte
 	err := v.db.QueryRow(ctx, `
 		SELECT kem_private_key, dsa_public_key
 		FROM evoting.election_keys
 		WHERE election_id = $1::uuid`,
 		electionID,
-	).Scan(&kemPrivKey, &dsaPubKey)
+	).Scan(&storedKEMPriv, &dsaPubKey)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return errors.New("election signing key not found")
 	}
 	if err != nil {
 		return fmt.Errorf("retrieve election keys: %w", err)
 	}
+
+	kemPrivKey, err := decryptPrivateKey(storedKEMPriv, v.masterKey)
+	if err != nil {
+		return fmt.Errorf("decrypt kem private key: %w", err)
+	}
+	defer func() {
+		for i := range kemPrivKey {
+			kemPrivKey[i] = 0
+		}
+	}()
 
 	// 2. Unwrap ML-KEM envelope if enveloped, or accept raw HE ciphertext
 	rawCT, err := cryptoutil.UnwrapBallot(kemPrivKey, encryptedVote)

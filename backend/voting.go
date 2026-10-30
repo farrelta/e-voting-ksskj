@@ -152,18 +152,42 @@ func (a *App) handleSubmitBallot(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Fetch KEM and DSA private keys for unwrapping and official server signing
-	var kemPrivKey, dsaPrivKey []byte
+	var storedKEMPriv, storedDSAPriv []byte
 	err = a.db.QueryRow(r.Context(), `
 		SELECT kem_private_key, dsa_private_key
 		FROM evoting.election_keys
 		WHERE election_id = $1::uuid`,
 		electionID,
-	).Scan(&kemPrivKey, &dsaPrivKey)
+	).Scan(&storedKEMPriv, &storedDSAPriv)
 	if err != nil {
 		log.Printf("fetch election keys for ballot signing: %v", err)
 		writeError(w, http.StatusInternalServerError, "Failed to process ballot")
 		return
 	}
+
+	kemPrivKey, err := decryptPrivateKey(storedKEMPriv, a.cfg.MasterKey)
+	if err != nil {
+		log.Printf("decrypt kem private key: %v", err)
+		writeError(w, http.StatusInternalServerError, "Failed to process ballot")
+		return
+	}
+	defer func() {
+		for i := range kemPrivKey {
+			kemPrivKey[i] = 0
+		}
+	}()
+
+	dsaPrivKey, err := decryptPrivateKey(storedDSAPriv, a.cfg.MasterKey)
+	if err != nil {
+		log.Printf("decrypt dsa private key: %v", err)
+		writeError(w, http.StatusInternalServerError, "Failed to process ballot")
+		return
+	}
+	defer func() {
+		for i := range dsaPrivKey {
+			dsaPrivKey[i] = 0
+		}
+	}()
 
 	rawCT, err := cryptoutil.UnwrapBallot(kemPrivKey, encryptedVote)
 	if err != nil {
