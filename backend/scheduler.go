@@ -6,22 +6,11 @@ import (
 	"time"
 )
 
-// How often the clock is checked. A few seconds is plenty: ballots are also
-// checked against the voting window themselves (see handleSubmitBallot), so a
-// late tick can never let a vote in outside the window.
+// How often the clock is checked
 const electionSchedulerInterval = 5 * time.Second
 
-// advanceElectionStatuses moves elections forward according to the clock:
-//
-//   - registration -> active_voting once voting_start has passed,
-//   - registration/active_voting -> completed once voting_end has passed.
-//
-// A draft election is never touched: the admin publishes it by opening
-// registration. Statuses only ever move forward here, so an admin closing an
-// election early with the manual control is respected.
+// advanceElectionStatuses moves elections forward according to the clock. A draft election is never touched: the admin publishes it by opening registration.
 func (a *App) advanceElectionStatuses(ctx context.Context) (closed, opened int64, err error) {
-	// Close first, so an election whose whole window has already passed goes
-	// straight to completed instead of briefly opening.
 	tag, err := a.db.Exec(ctx, `
 		UPDATE evoting.elections
 		SET status = 'completed'
@@ -41,9 +30,7 @@ func (a *App) advanceElectionStatuses(ctx context.Context) (closed, opened int64
 	return closed, tag.RowsAffected(), nil
 }
 
-// runElectionScheduler checks the clock immediately and then every interval
-// until ctx is cancelled. It is safe to run on several backend instances: the
-// updates are idempotent.
+// runElectionScheduler checks the clock immediately and then every interval until ctx is cancelled.
 func (a *App) runElectionScheduler(ctx context.Context) {
 	ticker := time.NewTicker(electionSchedulerInterval)
 	defer ticker.Stop()

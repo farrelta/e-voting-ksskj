@@ -13,7 +13,7 @@ type voterStatus struct {
 	HasVoted bool   `json:"has_voted"`
 }
 
-// GET /api/admin/elections/{electionId}/voters
+//GET /api/admin/elections/{electionId}/voters
 func (a *App) handleListVoters(w http.ResponseWriter, r *http.Request) {
 	electionID := r.PathValue("electionId")
 
@@ -58,7 +58,7 @@ func (a *App) handleListVoters(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 
-	voters := make([]voterStatus, 0) // [] instead of null when empty
+	voters := make([]voterStatus, 0) //[] if empty
 	for rows.Next() {
 		var v voterStatus
 		if err := rows.Scan(&v.UserID, &v.Email, &v.HasVoted); err != nil {

@@ -132,7 +132,7 @@ func main() {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	// Opens and closes elections by the clock (see scheduler.go).
+	// Opens and closes elections by the clock.
 	schedulerCtx, stopScheduler := context.WithCancel(ctx)
 	defer stopScheduler()
 	go app.runElectionScheduler(schedulerCtx)

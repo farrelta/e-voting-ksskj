@@ -9,23 +9,21 @@ import (
 )
 
 type Config struct {
-	Port         string
-	DBHost       string
-	DBPort       string
-	DBName       string
-	DBUser       string
-	DBPassword   string
-	RedisURL     string
-	OTPSecret    string
-	SMTPHost     string
-	SMTPPort     string
-	SMTPUser     string
-	SMTPPassword string
-	SMTPFrom     string
-	Env          string
-	FrontendDir  string
-	// AllowedEmailDomain restricts who can be added to an election's participant
-	// list. Addresses on this domain or any of its subdomains are accepted.
+	Port               string
+	DBHost             string
+	DBPort             string
+	DBName             string
+	DBUser             string
+	DBPassword         string
+	RedisURL           string
+	OTPSecret          string
+	SMTPHost           string
+	SMTPPort           string
+	SMTPUser           string
+	SMTPPassword       string
+	SMTPFrom           string
+	Env                string
+	FrontendDir        string
 	AllowedEmailDomain string
 }
 

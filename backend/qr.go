@@ -16,18 +16,6 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// QR login tokens.
-//
-// An admin issues a token for one eligible voter. It is shown as a QR code, and
-// the voter scans it with their phone. The token is:
-//   - 256 bits of randomness (not guessable),
-//   - stored only as a SHA-256 hash in Redis (a Redis leak doesn't leak live tokens),
-//   - single-use (redeemed with an atomic GETDEL),
-//   - short-lived (qrTokenTTL),
-//   - replaced when the admin issues a new one for the same voter.
-//
-// Scanning only identifies the voter. It does NOT log them in: it starts the
-// same email OTP challenge as the password login, and the OTP step finishes it.
 const qrTokenTTL = 15 * time.Minute
 
 func qrTokenKey(hash string) string    { return "qr:login:" + hash }
@@ -46,7 +34,6 @@ func newQRService(rdb *redis.Client) *QRService {
 	return &QRService{rdb: rdb}
 }
 
-// Issue creates a new token for userID and invalidates any earlier one.
 func (s *QRService) Issue(ctx context.Context, userID string) (string, error) {
 	raw := make([]byte, 32)
 	if _, err := rand.Read(raw); err != nil {
@@ -74,7 +61,6 @@ func (s *QRService) Issue(ctx context.Context, userID string) (string, error) {
 	return token, nil
 }
 
-// Redeem consumes a token. ok is false if it is unknown, expired or already used.
 func (s *QRService) Redeem(ctx context.Context, token string) (userID string, ok bool, err error) {
 	if token == "" || len(token) > 128 {
 		return "", false, nil
@@ -92,9 +78,6 @@ func (s *QRService) Redeem(ctx context.Context, token string) (userID string, ok
 	return userID, true, nil
 }
 
-// POST /api/admin/elections/{electionId}/voters/{userId}/qr
-//
-// Issues a login QR token for an eligible voter who has not voted yet.
 func (a *App) handleCreateVoterQR(w http.ResponseWriter, r *http.Request) {
 	electionID := r.PathValue("electionId")
 	userID := r.PathValue("userId")
@@ -148,11 +131,6 @@ func (a *App) handleCreateVoterQR(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// POST /api/login/qr
-// Body: {"token": "..."}
-//
-// Redeems a scanned QR token and starts the email OTP challenge for that voter.
-// The login is completed by POST /api/login/verify-otp, exactly as for password login.
 func (a *App) handleQRLogin(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Token string `json:"token"`

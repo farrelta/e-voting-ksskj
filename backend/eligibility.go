@@ -10,10 +10,6 @@ import (
 )
 
 // POST /api/admin/elections/{electionId}/voters
-// Body: {"email": "voter@ugm.ac.id"}
-//
-// Adds one participant (see addParticipants). The bulk endpoint is the same
-// thing for many addresses at once.
 func (a *App) handleGrantEligibility(w http.ResponseWriter, r *http.Request) {
 	electionID := r.PathValue("electionId")
 	if _, err := uuid.Parse(electionID); err != nil {
@@ -55,9 +51,6 @@ func (a *App) handleGrantEligibility(w http.ResponseWriter, r *http.Request) {
 }
 
 // DELETE /api/admin/elections/{electionId}/voters/{userId}
-//
-// Revokes eligibility, only if the voter has not voted yet. Once a ballot is
-// recorded the eligibility row must stay so the election remains auditable.
 func (a *App) handleRevokeEligibility(w http.ResponseWriter, r *http.Request) {
 	electionID := r.PathValue("electionId")
 	userID := r.PathValue("userId")

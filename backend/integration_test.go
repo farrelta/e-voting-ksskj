@@ -1,6 +1,6 @@
 package main
 
-// Database integration tests. Runs only when TEST_DATABASE_URL points at a PostgreSQL database that has database/schema.sql loaded.
+//Database integration test (Runs only when TEST_DATABASE_URL points to a PostgreSQL database tat has database/schema.sql loaded)
 import (
 	"bytes"
 	"context"
@@ -34,7 +34,7 @@ func testApp(t *testing.T) *App {
 	return &App{db: pool, cfg: &Config{AllowedEmailDomain: "ugm.ac.id"}}
 }
 
-// testAdmin creates an admin account and removes everything created under it.
+// testAdmin creates an admin account and returns its ID and a pointer to a slice of election IDs that should be cleaned up after the test.
 func testAdmin(t *testing.T, a *App) (adminID string, createdElections *[]string) {
 	t.Helper()
 	ctx := context.Background()
@@ -58,7 +58,7 @@ func testAdmin(t *testing.T, a *App) (adminID string, createdElections *[]string
 	return adminID, elections
 }
 
-// inserts an election whose voting window starts/ends the given durations from now.
+// make election whose voting window starts/ends the given durations from now.
 func newTestElection(t *testing.T, a *App, adminID string, created *[]string, status string, start, end time.Duration) string {
 	t.Helper()
 	now := time.Now()
@@ -157,7 +157,6 @@ func TestAddParticipants(t *testing.T) {
 		t.Fatalf("unexpected summary: %+v", sum)
 	}
 
-	//gives the new voter a verified password-less voter account.
 	var role, hash string
 	var verified bool
 	if err := a.db.QueryRow(ctx,
@@ -184,7 +183,7 @@ func TestAddParticipants(t *testing.T) {
 		t.Fatalf("second run: %+v", again)
 	}
 
-	//dissallow changes for a completed election
+	//dont allow changes for a completed election
 	a.db.Exec(ctx, `UPDATE evoting.elections SET status = 'completed' WHERE id = $1::uuid`, electionID)
 	if _, err := a.addParticipants(ctx, electionID, []string{"it-late-" + tag + "@ugm.ac.id"}); err != errElectionClosed {
 		t.Fatalf("expected errElectionClosed, got %v", err)
@@ -228,7 +227,6 @@ type acceptAllVerifier struct{}
 
 func (acceptAllVerifier) Verify(context.Context, string, []byte, []byte) error { return nil }
 
-// The ballot endpoint needs to enforce the voting window by the clock, even when the status flag says "active_voting".
 func TestBallotRejectedOutsideVotingWindow(t *testing.T) {
 	a := testApp(t)
 	a.ballotVerifier = acceptAllVerifier{}
@@ -296,7 +294,7 @@ func (m *fakeMailer) SendOTP(_ context.Context, to, code string) error {
 	return nil
 }
 
-// Full QR sign-in through the real router, token starts an email OTP challenge (sent through the mailer), has resend feature, the code completes the login
+// Full QR sign-in, token starts an email OTP challenge (sent through the mailer), has resend feature, the code completes the login
 func TestQRLoginSendsEmailOTPAndCompletesLogin(t *testing.T) {
 	a := testApp(t)
 	ctx := context.Background()
@@ -354,14 +352,13 @@ func TestQRLoginSendsEmailOTPAndCompletesLogin(t *testing.T) {
 		t.Fatalf("expected one 6-digit code emailed to %s, got %+v", voterEmail, mailer.sent)
 	}
 
-	//Not logged in yet: scanning alone must not authenticate
 	resp, _ := client.Get(srv.URL + "/api/me")
 	if resp.StatusCode == http.StatusOK {
 		t.Fatal("scanning must not log the voter in before the code is entered")
 	}
 	resp.Body.Close()
 
-	//"Resend code" must know who to email
+	//"Resend code" has to know who to email
 	mr.FastForward(otpResendCooldown + time.Second)
 	if code, body := post("/api/login/resend-otp", map[string]string{}); code != http.StatusOK {
 		t.Fatalf("resend: %d %s", code, body)

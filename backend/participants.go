@@ -15,9 +15,7 @@ import (
 
 const maxParticipantsPerRequest = 2000
 
-// Accounts created from an admin's participant list have no password. This
-// marker is not a valid bcrypt hash, so password login can never succeed for
-// them; the intended way in for these accounts is the campus SSO.
+// Accounts created from an admin's participant list have no password and cannot log in. They can only vote in elections where they eligible
 const lockedPasswordHash = "!"
 
 var (
@@ -25,12 +23,9 @@ var (
 	errElectionClosed  = errors.New("election is completed")
 )
 
-// Finds email-looking text anywhere in a pasted block. Names, headers and other
-// columns of a copied spreadsheet are ignored.
 var emailPattern = regexp.MustCompile(`[A-Za-z0-9._%+\-]+@[A-Za-z0-9\-]+(?:\.[A-Za-z0-9\-]+)+`)
 
-// extractEmails returns every distinct email address in text, lower-cased, in
-// the order first seen.
+// extractEmails returns every distinct email address in text, lower-cased, in the order first seen
 func extractEmails(text string) []string {
 	seen := make(map[string]struct{})
 	var out []string
@@ -46,7 +41,6 @@ func extractEmails(text string) []string {
 }
 
 // emailInDomain reports whether email is on domain or one of its subdomains
-// ("mail.ugm.ac.id" is accepted for "ugm.ac.id"; "evilugm.ac.id" is not).
 func emailInDomain(email, domain string) bool {
 	at := strings.LastIndex(email, "@")
 	if at < 1 || len(email) > 254 || domain == "" {
@@ -78,11 +72,7 @@ type accountInfo struct {
 	verified bool
 }
 
-// addParticipants makes every email in emails (already lower-cased and domain
-// checked) eligible for the election, creating a password-less voter account
-// for anyone who has none yet. It runs in one transaction using set-based SQL,
-// so a few thousand emails take a handful of queries. The admin learns only who
-// is on the list, never anything about votes.
+// addParticipants makes every email in emails (already lower-cased and domain checked) eligible for the election, creating a password-less voter account
 func (a *App) addParticipants(ctx context.Context, electionID string, emails []string) (participantSummary, error) {
 	sum := participantSummary{
 		Added:           []addedParticipant{},
@@ -95,7 +85,6 @@ func (a *App) addParticipants(ctx context.Context, electionID string, emails []s
 	}
 	defer tx.Rollback(ctx)
 
-	// Locking the election serialises concurrent changes to its voter list.
 	var status string
 	err = tx.QueryRow(ctx,
 		`SELECT status FROM evoting.elections WHERE id = $1::uuid FOR UPDATE`,
@@ -111,7 +100,7 @@ func (a *App) addParticipants(ctx context.Context, electionID string, emails []s
 		return sum, errElectionClosed
 	}
 
-	// 1. Accounts that already exist.
+	//1. Accounts that already exist.
 	accounts := make(map[string]accountInfo, len(emails))
 	rows, err := tx.Query(ctx, `
 		SELECT id::text, lower(email), role::text, is_verified
@@ -133,7 +122,7 @@ func (a *App) addParticipants(ctx context.Context, electionID string, emails []s
 		return sum, err
 	}
 
-	// 2. Create voter accounts for the rest.
+	//2. Create voter accounts for the rest
 	var missing []string
 	for _, email := range emails {
 		if _, ok := accounts[email]; !ok {
@@ -168,7 +157,7 @@ func (a *App) addParticipants(ctx context.Context, electionID string, emails []s
 		}
 	}
 
-	// 3. Only verified voter accounts can be participants.
+	//3. Only verified voter accounts can be participants
 	var candidates, candidateIDs []string
 	for _, email := range emails {
 		acct := accounts[email]
@@ -183,7 +172,7 @@ func (a *App) addParticipants(ctx context.Context, electionID string, emails []s
 		}
 	}
 
-	// 4. Who is already on the list?
+	//4. Who is already on the list
 	alreadyEligible := make(map[string]bool)
 	if len(candidateIDs) > 0 {
 		rows, err := tx.Query(ctx, `
@@ -207,7 +196,7 @@ func (a *App) addParticipants(ctx context.Context, electionID string, emails []s
 		}
 	}
 
-	// 5. Issue a receipt and an eligibility row to everyone new.
+	//5. Issue receipt and an eligibility row to everyone new
 	var userIDs, receiptIDs, codes []string
 	for _, email := range candidates {
 		acct := accounts[email]
@@ -258,10 +247,6 @@ func writeParticipantError(w http.ResponseWriter, err error) {
 }
 
 // POST /api/admin/elections/{electionId}/voters/bulk
-// Body: {"text": "<pasted emails, any separators>"}
-//
-// Adds every @<allowed domain> address found in the text. Other addresses are
-// reported back as invalid instead of being added.
 func (a *App) handleBulkAddParticipants(w http.ResponseWriter, r *http.Request) {
 	electionID := r.PathValue("electionId")
 	if _, err := uuid.Parse(electionID); err != nil {
