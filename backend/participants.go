@@ -13,7 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-const maxParticipantsPerRequest = 2000
+const maxParticipantsPerRequest = 500
 
 // Accounts created from an admin's participant list have no password and cannot log in. They can only vote in elections where they eligible
 const lockedPasswordHash = "!"
