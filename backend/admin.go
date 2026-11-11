@@ -13,7 +13,7 @@ type voterStatus struct {
 	HasVoted bool   `json:"has_voted"`
 }
 
-//GET /api/admin/elections/{electionId}/voters
+// GET /api/admin/elections/{electionId}/voters
 func (a *App) handleListVoters(w http.ResponseWriter, r *http.Request) {
 	electionID := r.PathValue("electionId")
 
