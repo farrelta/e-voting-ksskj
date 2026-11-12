@@ -23,10 +23,25 @@ export type Election = {
   receipt_code?: string;
 };
 
+  // Position of the candidate in the ordered ballot (0-based). The vote is encrypted as "slot <index>" and the tally reads the same slots back.
 export type Candidate = {
   id: string;
   name: string;
   description: string;
+  index: number;
+};
+
+export type CandidateResult = {
+  candidate_id: string;
+  name: string;
+  votes: number;
+};
+
+export type ElectionResults = {
+  election_id: string;
+  total_ballots: number;
+  results: CandidateResult[];
+  tallied_at: string;
 };
 
 export async function backendRequest(path: string, init: RequestInit = {}) {
@@ -87,4 +102,13 @@ export async function getVoters(electionId: string) {
 export async function getSessionUser() {
   const response = await backendRequest("/api/me");
   return readApiResponse<{ user: SessionUser }>(response);
+}
+
+// Public: results exist only after the admin has run the tally (404 before).
+export async function getElectionResults(electionId: string) {
+  const response = await backendRequest(
+    `/api/elections/${encodeURIComponent(electionId)}/results`,
+  );
+  if (response.status === 404) return null;
+  return readApiResponse<ElectionResults>(response);
 }

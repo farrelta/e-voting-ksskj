@@ -40,6 +40,8 @@ services:
   frontend:
     build:
       context: ./frontend
+      additional_contexts:
+        backend: ./backend
       args:
         BACKEND_URL: http://backend:3001
     environment:

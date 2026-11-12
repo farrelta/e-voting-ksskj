@@ -303,3 +303,52 @@ export async function createVoterQr(
     };
   }
 }
+
+type TallyResponse = {
+  total_ballots: number;
+  valid_ballots: number;
+};
+
+// The HE secret key is never stored by the backend. The admin supplies it here,
+// it is forwarded once to the tally endpoint, and nothing keeps a copy. It may be
+// pasted as the bare base64 key, or as the JSON object returned at election
+// creation ({"he_secret_key": "..."}).
+function extractSecretKey(raw: string) {
+  const text = raw.trim();
+  if (text.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(text) as { he_secret_key?: unknown };
+      if (typeof parsed.he_secret_key === "string") return parsed.he_secret_key.replace(/\s+/g, "");
+    } catch {
+      // not JSON: treat the text as the key itself
+    }
+  }
+  return text.replace(/\s+/g, "");
+}
+
+export async function tallyElection(formData: FormData) {
+  const electionId = formText(formData, "election_id");
+  const key = extractSecretKey(String(formData.get("he_secret_key") ?? ""));
+  if (!key) {
+    redirect(`/admin?error=${encodeURIComponent("Provide the election's HE secret key to run the tally.")}`);
+  }
+
+  let notice: string;
+  try {
+    const response = await backendRequest(
+      `/api/admin/elections/${encodeURIComponent(electionId)}/tally`,
+      { method: "POST", body: JSON.stringify({ he_secret_key: key }) },
+    );
+    const result = await readApiResponse<TallyResponse>(response);
+    const rejected = result.total_ballots - result.valid_ballots;
+    notice =
+      `Tally complete: ${result.valid_ballots} of ${result.total_ballots} ballots counted` +
+      (rejected > 0 ? ` (${rejected} rejected as invalid)` : "") +
+      ".";
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Tally failed.";
+    redirect(`/admin?error=${encodeURIComponent(message)}`);
+  }
+  revalidatePath("/admin");
+  redirect(`/admin?notice=${encodeURIComponent(notice)}`);
+}

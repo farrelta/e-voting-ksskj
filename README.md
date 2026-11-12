@@ -188,3 +188,22 @@ docker compose up --build
 
 The one-time code is emailed through the same SMTP settings as the password login
 (in development without SMTP it is printed in the backend log instead).
+
+## Browser encryption, tally and results
+
+**Voting.** A voter's choice is encrypted in their browser before it is sent. The
+encryption code is the same Go code the server uses (`backend/cryptoutil`),
+compiled to WebAssembly by `backend/cmd/clientcrypto`. The voter picks a candidate,
+reviews it on a confirmation step, and after submitting only sees that they have
+voted.
+
+The module must be built into `frontend/public/crypto/`:
+
+- `docker compose up --build` does this automatically (it needs Docker Compose 2.17+
+  for the `additional_contexts` setting in `docker-compose.yaml`).
+- Without Docker, run `scripts/build-client-crypto.sh` once (needs Go 1.24+), then
+  `npm run dev` in `frontend/`.
+
+**Tally.** After voting ends, open **Admin -> (election) -> Tally and results**,
+paste or load the election's HE secret key, and press **Tally votes**. The key is used
+once and is never stored. The saved result is public at `/results/<election id>`.

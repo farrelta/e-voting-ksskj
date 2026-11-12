@@ -765,3 +765,95 @@ code {
   justify-items: center;
   text-align: center;
 }
+
+/* Ballot confirmation and privacy notes */
+.privacy-notice,
+.confirm-notice {
+  display: grid;
+  gap: 5px;
+  padding: 14px;
+  border: 1px solid #d2e6df;
+  border-radius: 9px;
+  color: var(--green-dark);
+  background: #f5fbf8;
+  font-size: 0.84rem;
+  line-height: 1.5;
+}
+
+.confirm-notice {
+  border-color: #f0d89c;
+  color: #705617;
+  background: #fff9e9;
+}
+
+.confirm-notice strong {
+  font-size: 1.1rem;
+  color: var(--ink);
+}
+
+.ballot-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+/* Tally and results */
+.results {
+  display: grid;
+  gap: 14px;
+}
+
+.results-list {
+  display: grid;
+  gap: 14px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.result-row {
+  display: grid;
+  gap: 6px;
+}
+
+.result-label {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 14px;
+}
+
+.result-label span {
+  color: var(--muted);
+  font-size: 0.86rem;
+}
+
+.result-bar {
+  height: 10px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--mint);
+}
+
+.result-bar span {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--green);
+}
+
+.results-meta {
+  margin: 0;
+  font-size: 0.84rem;
+}
+
+.tally-panel .results,
+.tally-panel .tally-form {
+  margin-top: 16px;
+}
+
+.tally-form textarea {
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 0.8rem;
+}

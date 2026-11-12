@@ -7,15 +7,18 @@ import {
   updateElectionStatus,
 } from "@/app/actions";
 import { LogoutButton } from "@/app/components/logout-button";
+import { ResultsTable } from "@/app/components/results-table";
 import {
   getAdminCandidates,
+  getElectionResults,
   getElections,
   getSessionUser,
   getVoters,
 } from "@/lib/backend";
-import type { Candidate, VoterStatus } from "@/lib/backend";
+import type { Candidate, ElectionResults, VoterStatus } from "@/lib/backend";
 import { ConfirmSubmitButton } from "./confirm-submit-button";
 import { ElectionForm } from "./election-form";
+import { TallyForm } from "./tally-form";
 import { VoterPanel } from "./voter-panel";
 
 export default async function AdminPage({
@@ -42,6 +45,12 @@ export default async function AdminPage({
     }),
   );
   const votersByElection = new Map<string, VoterStatus[]>(voterResults);
+  const tallyResults = await Promise.all(
+    elections
+      .filter((election) => election.status === "completed")
+      .map(async (election) => [election.id, await getElectionResults(election.id)] as const),
+  );
+  const resultsByElection = new Map<string, ElectionResults | null>(tallyResults);
 
   return (
     <main className="page-shell">
@@ -189,6 +198,26 @@ export default async function AdminPage({
                   Open voter registration to publish this election. After that, voting
                   starts and stops automatically at the voting start and end times above.
                 </p>
+                {(election.status === "active_voting" || election.status === "completed") && (
+                  <details className="edit-details tally-panel" open={election.status === "completed"}>
+                    <summary>Tally and results</summary>
+                    {resultsByElection.get(election.id) && (
+                      <>
+                        <ResultsTable results={resultsByElection.get(election.id)!} />
+                        <p className="candidate-management-help">
+                          Public results page:{" "}
+                          <Link className="text-link" href={`/results/${election.id}`}>
+                            /results/{election.id}
+                          </Link>
+                        </p>
+                      </>
+                    )}
+                    <TallyForm
+                      electionId={election.id}
+                      alreadyTallied={Boolean(resultsByElection.get(election.id))}
+                    />
+                  </details>
+                )}
                 <div className="milestone-form">
                   <form action={updateElectionStatus}>
                     <input type="hidden" name="election_id" value={election.id} />
