@@ -104,9 +104,14 @@ func main() {
 	if err != nil {
 		log.Fatalf("config: %v", err)
 	}
-	mailer, err := newSMTPMailer(cfg)
+	smtpMailer, err := newSMTPMailer(cfg)
 	if err != nil {
 		log.Fatalf("SMTP configuration: %v", err)
+	}
+
+	var mailer OTPMailer
+	if smtpMailer != nil {
+		mailer = smtpMailer
 	}
 
 	ctx := context.Background()
