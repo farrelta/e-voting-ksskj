@@ -305,6 +305,49 @@ textarea:focus {
   background: var(--mint);
 }
 
+.preview-notice {
+  margin-top: 20px;
+  border-color: #f0d89c;
+  color: #705617;
+  background: #fff8e6;
+}
+
+.preview-choice-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+}
+
+.preview-choice {
+  display: block;
+  padding: 25px;
+  text-decoration: none;
+}
+
+.preview-choice:hover {
+  border-color: #bdd8d1;
+  box-shadow: var(--shadow);
+}
+
+.preview-choice h2 {
+  margin-bottom: 10px;
+}
+
+.preview-choice .muted {
+  margin-bottom: 18px;
+}
+
+.topbar-user a {
+  color: var(--green-dark);
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.topbar-user a[aria-current="page"] {
+  text-decoration: underline;
+  text-underline-offset: 5px;
+}
+
 .panel {
   border: 1px solid var(--line);
   border-radius: 15px;
@@ -641,6 +684,10 @@ code {
 }
 
 @media (max-width: 680px) {
+  .preview-choice-grid {
+    grid-template-columns: 1fr;
+  }
+
   .page-shell {
     width: min(100% - 30px, 1120px);
   }

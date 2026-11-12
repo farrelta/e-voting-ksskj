@@ -35,6 +35,22 @@ terminal open to see service logs; stop the application with **Ctrl+C**. To run
 it in the background instead, use `docker compose up --build -d`, then stop it
 with `docker compose down`.
 
+### View page mockups
+
+To preview the admin and voter dashboard screens without signing in, start the
+frontend and open <http://localhost:3000/preview>. The preview uses sample data,
+and its controls are disabled; the real pages remain protected by sign-in.
+
+For frontend-only development without Docker:
+
+```powershell
+Set-Location frontend
+npm ci
+npm run dev
+```
+
+Then open <http://localhost:3000/preview>.
+
 ### Create a first admin account
 
 The database starts empty, so add a verified admin account before signing in.

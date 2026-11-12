@@ -13,6 +13,7 @@ function displayDate(value: string) {
   return new Intl.DateTimeFormat(undefined, {
     dateStyle: "medium",
     timeStyle: "short",
+    timeZone: "Asia/Jakarta",
   }).format(new Date(value));
 }
 
@@ -82,6 +83,7 @@ export default async function DashboardPage({
                   <span>{displayDate(election.voting_start)} – {displayDate(election.voting_end)}</span>
                 </div>
               </div>
+              <p className="muted">All times are shown in GMT+7.</p>
 
               {election.status === "registration" && !election.is_registered && (
                 <form action={registerForElection}>
