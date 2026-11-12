@@ -22,8 +22,7 @@ type rateRule struct {
 	window time.Duration
 }
 
-// Limits are per client IP unless the name says otherwise. They are generous
-// for a real person and cheap to hit for a script.
+// Limits are per client IP unless the name says otherwise. They are generous for a real person and cheap to hit for a script.
 var (
 	ruleLoginIP        = rateRule{"login-ip", 20, 10 * time.Minute}
 	ruleOTPVerifyIP    = rateRule{"otp-verify-ip", 30, 10 * time.Minute}
@@ -31,14 +30,11 @@ var (
 	ruleQRLoginIP      = rateRule{"qr-login-ip", 30, 10 * time.Minute}
 	ruleVerifyBallotIP = rateRule{"verify-ballot-ip", 60, time.Minute}
 
-	// Per account, whichever IP the requests come from.
 	ruleLoginFailures = rateRule{"login-fail", 10, 15 * time.Minute} // wrong passwords
 	ruleOTPSends      = rateRule{"otp-send", 5, time.Hour}           // sign-in codes emailed
 	ruleOTPFailures   = rateRule{"otp-fail", 10, 15 * time.Minute}   // wrong codes, across all challenges
 )
 
-// Increments the counter and starts the window on the first event. If the key
-// somehow has no expiry it is given one, so a counter can never stick forever.
 var rateLimitScript = redis.NewScript(`
 local count = redis.call('INCR', KEYS[1])
 local ttl = redis.call('PTTL', KEYS[1])
@@ -49,8 +45,7 @@ end
 return {count, ttl}
 `)
 
-// RateLimiter keeps fixed-window counters in Redis. A nil *RateLimiter allows
-// everything, which keeps tests that build an App by hand simple.
+// RateLimiter keeps fixed-window counters in Redis. A nil *RateLimiter allows everything, which keeps tests that build an App by hand simple.
 type RateLimiter struct {
 	rdb *redis.Client
 }
@@ -61,7 +56,6 @@ func newRateLimiter(rdb *redis.Client) *RateLimiter {
 
 func rateKey(rule rateRule, id string) string { return "rl:" + rule.name + ":" + id }
 
-// record counts one event and returns the new count and the time left in the window.
 func (l *RateLimiter) record(ctx context.Context, rule rateRule, id string) (int64, time.Duration, error) {
 	res, err := rateLimitScript.Run(ctx, l.rdb, []string{rateKey(rule, id)}, rule.window.Milliseconds()).Int64Slice()
 	if err != nil {
@@ -73,8 +67,7 @@ func (l *RateLimiter) record(ctx context.Context, rule rateRule, id string) (int
 	return res[0], time.Duration(res[1]) * time.Millisecond, nil
 }
 
-// Allow counts one event and reports whether it is within the limit. When it is
-// not, the duration is how long until the window resets.
+// Allow counts one event and reports whether it is within the limit. When it is not, the duration is how long until the window resets.
 func (l *RateLimiter) Allow(ctx context.Context, rule rateRule, id string) (bool, time.Duration, error) {
 	if l == nil {
 		return true, 0, nil
@@ -86,8 +79,7 @@ func (l *RateLimiter) Allow(ctx context.Context, rule rateRule, id string) (bool
 	return count <= rule.limit, wait, nil
 }
 
-// Blocked reports whether id has already used up the rule, without counting a
-// new event. Used with Fail for counters that only count failures.
+// Blocked reports whether id has already used up the rule, without counting a new event. Used with Fail for counters that only count failures.
 func (l *RateLimiter) Blocked(ctx context.Context, rule rateRule, id string) (bool, time.Duration, error) {
 	if l == nil {
 		return false, 0, nil
@@ -138,15 +130,13 @@ func tooManyRequests(w http.ResponseWriter, wait time.Duration, message string) 
 	writeError(w, http.StatusTooManyRequests, message)
 }
 
-// limiterUnavailable is the answer when Redis cannot be reached. Limits fail
-// closed: sessions and sign-in codes need Redis as well, so nothing is lost.
+// limiterUnavailable is the answer when Redis cannot be reached.
 func limiterUnavailable(w http.ResponseWriter, err error) {
 	log.Printf("rate limiter: %v", err)
 	writeError(w, http.StatusServiceUnavailable, "Service temporarily unavailable. Please try again shortly.")
 }
 
-// allowOTPSend limits how many sign-in codes one account can be emailed. It
-// writes the error response itself and returns false when the caller must stop.
+// allowOTPSend limits how many sign-in codes one account can be emailed. It writes the error response itself and returns false when the caller must stop.
 func (a *App) allowOTPSend(ctx context.Context, w http.ResponseWriter, userID string) bool {
 	ok, wait, err := a.limiter.Allow(ctx, ruleOTPSends, userID)
 	if err != nil {
@@ -177,13 +167,6 @@ func ipRuleFor(r *http.Request) (rateRule, bool) {
 	return rateRule{}, false
 }
 
-// rateLimitRequests applies the per-IP limits in front of the API. Per-account
-// limits live in the login handlers because they need the email or user.
-//
-// Per-IP limits are only useful when the real client address is known. Behind
-// the Next.js proxy the TCP peer is the frontend for every user, so without
-// that knowledge one shared limit would lock everybody out. They therefore stay
-// off until TRUSTED_PROXY_HOPS says how clients reach this server.
 func (a *App) rateLimitRequests(next http.Handler) http.Handler {
 	if a.limiter == nil || a.cfg == nil || !a.cfg.ClientIPKnown {
 		return next
@@ -212,18 +195,6 @@ func (a *App) clientIP(r *http.Request) string {
 	return clientIP(r, hops)
 }
 
-// clientIP returns the address to rate limit on.
-//
-// Behind a reverse proxy the TCP peer is the proxy, not the user. A proxy that
-// appends the address it saw to X-Forwarded-For (nginx, Caddy, most load
-// balancers) makes only its own entries believable; anything to the left of them
-// was written by the client. With trustedHops such proxies in front, the real
-// client is trustedHops entries from the right. With 0 the header is ignored
-// completely, so it cannot be spoofed when clients connect directly.
-//
-// The Next.js rewrite proxy does NOT count as a trusted hop: it passes the
-// client's own X-Forwarded-For through unchanged, so anything it forwards can be
-// forged.
 func clientIP(r *http.Request, trustedHops int) string {
 	peer := r.RemoteAddr
 	if host, _, err := net.SplitHostPort(peer); err == nil {
@@ -248,8 +219,7 @@ func clientIP(r *http.Request, trustedHops int) string {
 	return normalizeIP(ip)
 }
 
-// normalizeIP makes equivalent addresses share one bucket. IPv6 users can
-// choose any address in their /64, so the whole /64 is treated as one client.
+// normalizeIP makes equivalent addresses share one bucket. IPv6 users can choose any address in their /64, so the whole /64 is treated as one client.
 func normalizeIP(value string) string {
 	addr, err := netip.ParseAddr(value)
 	if err != nil {

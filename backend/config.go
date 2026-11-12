@@ -30,12 +30,8 @@ type Config struct {
 	Env                string
 	FrontendDir        string
 	AllowedEmailDomain string
-	// How browsers reach this server, for finding the real client IP.
-	// ClientIPKnown is false until TRUSTED_PROXY_HOPS is set; per-IP rate limits
-	// stay off until then. TrustedProxyHops is the number of reverse proxies that
-	// append the client address to X-Forwarded-For (0 = clients connect directly).
-	ClientIPKnown    bool
-	TrustedProxyHops int
+	ClientIPKnown      bool
+	TrustedProxyHops   int
 }
 
 func (c *Config) IsDev() bool        { return c.Env == "development" }

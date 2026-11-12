@@ -130,8 +130,7 @@ func (a *App) handleVerifyOTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Wrong codes are counted per account, not per challenge: starting a new
-	// sign-in must not give an attacker a fresh set of guesses.
+	// Wrong codes are counted per account, not per challenge: starting a new sign-in must not give an attacker a fresh set of guesses.
 	blocked, wait, err := a.limiter.Blocked(ctx, ruleOTPFailures, sess.PendingUserID)
 	if err != nil {
 		limiterUnavailable(w, err)

@@ -265,8 +265,7 @@ func TestLimiterFailsClosedWhenRedisIsDown(t *testing.T) {
 	}
 }
 
-// Wrong sign-in codes are counted per account. Starting a new sign-in creates a
-// new challenge with its own five attempts, but must not reset this count.
+// Wrong sign-in codes are counted per account. Starting a new sign-in creates anew challenge with its own five attempts, but must not reset this count.
 func TestOTPFailuresAreCountedAcrossChallenges(t *testing.T) {
 	a := newLimitedApp(t, 0)
 	ctx := context.Background()

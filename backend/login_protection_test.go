@@ -103,9 +103,7 @@ func upper(s string) string {
 	return string(b)
 }
 
-// An unknown email, a QR-only account (placeholder hash) and a real account with
-// the wrong password must all take about as long, or the response time shows
-// which addresses are registered.
+// An unknown email, a QR-only account (placeholder hash) and a real account with the wrong password must all take about as long, or the response time shows which addresses are registered.
 func TestLoginTimingDoesNotRevealAccounts(t *testing.T) {
 	a := testApp(t) // no limiter: only the timing is under test
 	testAdmin(t, a)
