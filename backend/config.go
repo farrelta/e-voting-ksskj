@@ -6,27 +6,29 @@ import (
 	"encoding/hex"
 	"errors"
 	"os"
+	"strings"
 
 	"github.com/joho/godotenv"
 )
 
 type Config struct {
-	Port         string
-	DBHost       string
-	DBPort       string
-	DBName       string
-	DBUser       string
-	DBPassword   string
-	RedisURL     string
-	OTPSecret    string
-	MasterKey    []byte
-	SMTPHost     string
-	SMTPPort     string
-	SMTPUser     string
-	SMTPPassword string
-	SMTPFrom     string
-	Env          string
-	FrontendDir  string
+	Port               string
+	DBHost             string
+	DBPort             string
+	DBName             string
+	DBUser             string
+	DBPassword         string
+	RedisURL           string
+	OTPSecret          string
+	MasterKey          []byte
+	SMTPHost           string
+	SMTPPort           string
+	SMTPUser           string
+	SMTPPassword       string
+	SMTPFrom           string
+	Env                string
+	FrontendDir        string
+	AllowedEmailDomain string
 }
 
 func (c *Config) IsDev() bool        { return c.Env == "development" }
@@ -58,6 +60,8 @@ func loadConfig() (*Config, error) {
 		SMTPFrom:     os.Getenv("SMTP_FROM"),
 		Env:          getenv("APP_ENV", "production"),
 		FrontendDir:  getenv("FRONTEND_DIR", "../frontend"),
+		AllowedEmailDomain: strings.ToLower(strings.TrimPrefix(
+			strings.TrimSpace(getenv("ALLOWED_EMAIL_DOMAIN", "ugm.ac.id")), "@")),
 	}
 
 	if cfg.DBName == "" || cfg.DBUser == "" {

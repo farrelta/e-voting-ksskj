@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	otpTTL            = 5 * time.Minute
+	otpTTL            = 2 * time.Minute
 	otpMaxAttempts    = 5
 	otpResendCooldown = 30 * time.Second
 )

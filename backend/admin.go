@@ -58,7 +58,7 @@ func (a *App) handleListVoters(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 
-	voters := make([]voterStatus, 0) // [] instead of null when empty
+	voters := make([]voterStatus, 0) //[] if empty
 	for rows.Next() {
 		var v voterStatus
 		if err := rows.Scan(&v.UserID, &v.Email, &v.HasVoted); err != nil {

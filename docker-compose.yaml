@@ -44,6 +44,7 @@ services:
         BACKEND_URL: http://backend:3001
     environment:
       BACKEND_URL: http://backend:3001
+      PUBLIC_APP_URL: ${PUBLIC_APP_URL:-http://localhost:3000}
       NODE_ENV: production
     ports:
       - "3000:3000"

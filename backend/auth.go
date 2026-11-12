@@ -257,7 +257,6 @@ func (a *App) handleLogout(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"message": "Logged out"})
 }
 
-// delete req.session.pendingLogin`
 func (a *App) clearPendingLogin(w http.ResponseWriter, r *http.Request, sess *Session) {
 	sess.PendingChallengeID = ""
 	sess.PendingUserID = ""

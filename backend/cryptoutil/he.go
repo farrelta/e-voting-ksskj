@@ -241,4 +241,3 @@ func VerifyBallotValidity(secKeyBytes, ctBytes []byte, numCandidates int) (bool,
 
 	return true, nil
 }
-

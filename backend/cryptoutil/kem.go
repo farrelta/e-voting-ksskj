@@ -146,4 +146,3 @@ func UnwrapBallot(kemPrivKey, data []byte) ([]byte, error) {
 	return nil, fmt.Errorf("invalid ballot length: got %d (expected %d for enveloped or %d for raw)",
 		len(data), ExpectedEnvelopedCiphertextSize, ExpectedCiphertextSize)
 }
-

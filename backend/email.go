@@ -91,7 +91,7 @@ func (m *SMTPMailer) SendOTP(ctx context.Context, recipient, code string) error 
 		return fmt.Errorf("open SMTP message: %w", err)
 	}
 	_, writeErr := fmt.Fprintf(writer,
-		"From: %s\r\nTo: %s\r\nSubject: Your e-voting sign-in code\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\nYour one-time sign-in code is %s. It expires in 5 minutes. If you did not request this code, you can ignore this email.\r\n",
+		"From: %s\r\nTo: %s\r\nSubject: Your e-voting sign-in code\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\nYour one-time sign-in code is %s. It expires in 2 minutes. If you did not request this code, you can ignore this email.\r\n",
 		m.from.String(), to.String(), code,
 	)
 	closeErr := writer.Close()
