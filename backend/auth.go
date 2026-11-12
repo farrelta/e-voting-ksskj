@@ -8,7 +8,6 @@ import (
 	"regexp"
 
 	"github.com/jackc/pgx/v5"
-	"golang.org/x/crypto/bcrypt"
 )
 
 var otpFormat = regexp.MustCompile(`^\d{6}$`)
@@ -25,6 +24,17 @@ func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
+	accountKey := accountRateKey(body.Email)
+
+	blocked, wait, err := a.limiter.Blocked(ctx, ruleLoginFailures, accountKey)
+	if err != nil {
+		limiterUnavailable(w, err)
+		return
+	}
+	if blocked {
+		tooManyRequests(w, wait, "Too many failed sign-in attempts. Please try again later.")
+		return
+	}
 
 	var user struct {
 		ID           string
@@ -33,13 +43,15 @@ func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 		Role         string
 		IsVerified   bool
 	}
-	err := a.db.QueryRow(ctx, `
+	err = a.db.QueryRow(ctx, `
 		SELECT id::text, email, password_hash, role::text, is_verified
 		FROM evoting.users
 		WHERE email = $1`,
 		body.Email,
 	).Scan(&user.ID, &user.Email, &user.PasswordHash, &user.Role, &user.IsVerified)
 	if errors.Is(err, pgx.ErrNoRows) {
+		burnPasswordCheck(body.Password)
+		a.recordLoginFailure(ctx, accountKey)
 		writeError(w, http.StatusUnauthorized, "Invalid email or password")
 		return
 	}
@@ -49,13 +61,21 @@ func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(body.Password)) != nil {
+	if !checkPassword(user.PasswordHash, body.Password) {
+		a.recordLoginFailure(ctx, accountKey)
 		writeError(w, http.StatusUnauthorized, "Invalid email or password")
 		return
+	}
+	if err := a.limiter.Reset(ctx, ruleLoginFailures, accountKey); err != nil {
+		log.Printf("reset login failures: %v", err)
 	}
 
 	if !user.IsVerified {
 		writeError(w, http.StatusForbidden, "Account is not verified")
+		return
+	}
+
+	if !a.allowOTPSend(ctx, w, user.ID) {
 		return
 	}
 
@@ -110,6 +130,19 @@ func (a *App) handleVerifyOTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Wrong codes are counted per account, not per challenge: starting a new
+	// sign-in must not give an attacker a fresh set of guesses.
+	blocked, wait, err := a.limiter.Blocked(ctx, ruleOTPFailures, sess.PendingUserID)
+	if err != nil {
+		limiterUnavailable(w, err)
+		return
+	}
+	if blocked {
+		a.clearPendingLogin(w, r, sess)
+		tooManyRequests(w, wait, "Too many incorrect codes. Please try again later.")
+		return
+	}
+
 	result, err := a.otp.VerifyChallenge(ctx, sess.PendingChallengeID, body.OTP)
 	if err != nil {
 		log.Printf("verify otp: %v", err)
@@ -118,6 +151,11 @@ func (a *App) handleVerifyOTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !result.Success {
+		if result.Reason == reasonInvalidOTP || result.Reason == reasonTooManyAttempts {
+			if err := a.limiter.Fail(ctx, ruleOTPFailures, sess.PendingUserID); err != nil {
+				log.Printf("count otp failure: %v", err)
+			}
+		}
 		switch result.Reason {
 		case reasonTooManyAttempts:
 			a.clearPendingLogin(w, r, sess)
@@ -129,6 +167,10 @@ func (a *App) handleVerifyOTP(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusUnauthorized, "Invalid OTP")
 		}
 		return
+	}
+
+	if err := a.limiter.Reset(ctx, ruleOTPFailures, result.UserID); err != nil {
+		log.Printf("reset otp failures: %v", err)
 	}
 
 	var user SessionUser
@@ -191,6 +233,10 @@ func (a *App) handleResendOTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if !allowed {
 		writeError(w, http.StatusTooManyRequests, "Please wait before requesting another OTP")
+		return
+	}
+
+	if !a.allowOTPSend(ctx, w, sess.PendingUserID) {
 		return
 	}
 
@@ -262,5 +308,11 @@ func (a *App) clearPendingLogin(w http.ResponseWriter, r *http.Request, sess *Se
 	sess.PendingUserID = ""
 	if err := a.sessions.Save(r.Context(), w, sess); err != nil {
 		log.Printf("clear pending login: %v", err)
+	}
+}
+
+func (a *App) recordLoginFailure(ctx context.Context, accountKey string) {
+	if err := a.limiter.Fail(ctx, ruleLoginFailures, accountKey); err != nil {
+		log.Printf("count login failure: %v", err)
 	}
 }

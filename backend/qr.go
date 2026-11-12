@@ -169,6 +169,10 @@ func (a *App) handleQRLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !a.allowOTPSend(ctx, w, userID) {
+		return
+	}
+
 	challengeID, otp, err := a.otp.CreateChallenge(ctx, userID)
 	if err != nil {
 		log.Printf("create otp challenge: %v", err)

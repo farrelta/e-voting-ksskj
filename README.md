@@ -142,6 +142,43 @@ verifier is installed. Candidate selections remain in the browser. Do not
 enable ballot submission by substituting generic encryption or by sending a
 plain candidate identifier to the API.
 
+## Rate limiting
+
+Sign-in is protected against guessing and flooding with Redis-backed limits
+(`backend/ratelimit.go`). Over a limit, the API answers `429` with a
+`Retry-After` header.
+
+| What | Limit |
+| --- | --- |
+| `/api/login` | 20 per IP per 10 minutes (per-IP limits: see below) |
+| Wrong passwords | 10 per account per 15 minutes |
+| Wrong sign-in codes | 10 per account per 15 minutes, across all sign-in attempts |
+| Sign-in codes emailed | 5 per account per hour |
+| `/api/login/verify-otp`, `/resend-otp`, `/qr` | 30 each per IP per 10 minutes |
+| `/api/verify/{receipt code}` | 60 per IP per minute |
+
+Looking up an email that has no account, or an account that signs in with a QR
+code, takes as long as a real password check, so response time does not reveal
+which addresses are registered. A locked account also looks the same whether or
+not the email exists.
+
+**Per-IP limits need `TRUSTED_PROXY_HOPS`.** The per-account limits always apply.
+The per-IP ones stay off until `TRUSTED_PROXY_HOPS` is set, because the Next.js
+frontend does not tell the backend who the real client is (it forwards whatever
+`X-Forwarded-For` the browser sent, which can be forged, and the backend's own
+view of the connection is just the frontend). With one shared limit, the first 20
+voters to sign in would lock everyone else out. The backend logs a notice at
+startup while they are off.
+
+For a real deployment, put a reverse proxy such as nginx or Caddy in front, make
+sure it adds the client address to `X-Forwarded-For`, and set
+`TRUSTED_PROXY_HOPS=1` (add 1 for each extra proxy, such as a load balancer).
+Use `0` only if browsers connect to the backend directly. A value that is too
+high lets clients forge their address, so do not set it without a proxy.
+
+Failures are counted per account, so someone who knows an email can lock that
+account's password sign-in for up to 15 minutes by guessing wrongly.
+
 ## Participants and the automatic schedule
 
 **Participants.** In **Admin -> Eligible voters**, paste the participants' email

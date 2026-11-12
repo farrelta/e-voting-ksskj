@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/joho/godotenv"
@@ -29,6 +30,12 @@ type Config struct {
 	Env                string
 	FrontendDir        string
 	AllowedEmailDomain string
+	// How browsers reach this server, for finding the real client IP.
+	// ClientIPKnown is false until TRUSTED_PROXY_HOPS is set; per-IP rate limits
+	// stay off until then. TrustedProxyHops is the number of reverse proxies that
+	// append the client address to X-Forwarded-For (0 = clients connect directly).
+	ClientIPKnown    bool
+	TrustedProxyHops int
 }
 
 func (c *Config) IsDev() bool        { return c.Env == "development" }
@@ -62,6 +69,15 @@ func loadConfig() (*Config, error) {
 		FrontendDir:  getenv("FRONTEND_DIR", "../frontend"),
 		AllowedEmailDomain: strings.ToLower(strings.TrimPrefix(
 			strings.TrimSpace(getenv("ALLOWED_EMAIL_DOMAIN", "ugm.ac.id")), "@")),
+	}
+
+	if raw := strings.TrimSpace(os.Getenv("TRUSTED_PROXY_HOPS")); raw != "" {
+		hops, err := strconv.Atoi(raw)
+		if err != nil || hops < 0 || hops > 10 {
+			return nil, errors.New("TRUSTED_PROXY_HOPS must be a whole number from 0 to 10")
+		}
+		cfg.TrustedProxyHops = hops
+		cfg.ClientIPKnown = true
 	}
 
 	if cfg.DBName == "" || cfg.DBUser == "" {

@@ -21,6 +21,7 @@ type App struct {
 	sessions       *SessionStore
 	otp            *OTPService
 	qr             *QRService
+	limiter        *RateLimiter
 	mailer         OTPMailer
 	ballotVerifier BallotVerifier
 }
@@ -94,7 +95,7 @@ func (a *App) routes() http.Handler {
 	}
 
 	root := http.NewServeMux()
-	root.Handle("/api/", a.loadSession(api))
+	root.Handle("/api/", a.rateLimitRequests(a.loadSession(api)))
 	root.Handle("/", http.FileServer(http.Dir(a.cfg.FrontendDir)))
 	return root
 }
@@ -137,7 +138,13 @@ func main() {
 		otp:            newOTPService(rdb, cfg.OTPSecret),
 		mailer:         mailer,
 		qr:             newQRService(rdb),
+		limiter:        newRateLimiter(rdb),
 		ballotVerifier: NewBallotVerifier(pool, cfg.MasterKey),
+	}
+
+	warmPasswordDummy()
+	if !cfg.ClientIPKnown {
+		log.Println("rate limiting: per-IP limits are OFF because TRUSTED_PROXY_HOPS is not set; per-account limits are active")
 	}
 
 	srv := &http.Server{
