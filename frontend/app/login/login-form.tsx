@@ -1,7 +1,7 @@
 "use client";
 
 import { FormEvent, useEffect, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 
 type ApiError = { error?: string };
 
@@ -10,8 +10,26 @@ async function requestError(response: Response) {
   return payload.error || `Request failed (${response.status})`;
 }
 
+// oauthMessages maps the error codes issued by the backend callback onto text
+// the voter can act on.
+const oauthMessages: Record<string, string> = {
+  oauth_disabled: "Google sign-in is not available right now.",
+  oauth_state: "That sign-in attempt expired. Please try again.",
+  oauth_exchange: "Google sign-in was cancelled or failed. Please try again.",
+  oauth_token: "We could not verify your Google account. Please try again.",
+  oauth_unregistered:
+    "This email is not registered for the election. Ask an administrator to add you as a participant.",
+  oauth_domain: "Only accounts on the allowed university domain can sign in.",
+  oauth_role: "This account is not allowed to sign in with Google.",
+  oauth_conflict:
+    "This account is already linked to a different Google account. Ask an administrator for help.",
+  oauth_account: "We could not complete sign-in for this account.",
+  oauth_otp: "We could not send your sign-in code. Please try again later.",
+};
+
 export function LoginForm({ qrToken }: { qrToken?: string }) {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [otp, setOtp] = useState("");
@@ -21,6 +39,24 @@ export function LoginForm({ qrToken }: { qrToken?: string }) {
   const [qrFailed, setQrFailed] = useState(false);
   const qrStarted = useRef(false);
   const scanMode = Boolean(qrToken);
+
+  const oauthError = searchParams.get("error");
+  const returnedFromOAuth = searchParams.get("step") === "otp";
+
+  // The OAuth callback hands back a session that is already waiting for an OTP,
+  // so jump straight to the one-time-code step instead of the password form.
+  useEffect(() => {
+    if (!returnedFromOAuth) return;
+    setOtpRequired(true);
+  }, [returnedFromOAuth]);
+
+  useEffect(() => {
+    if (!oauthError) return;
+    setMessage(
+      oauthMessages[oauthError] ??
+        "Google sign-in failed. Please try again or use your password.",
+    );
+  }, [oauthError]);
 
   // A scanned QR replaces the password step: redeem the token, which starts the
   // email OTP challenge, then fall through to the normal one-time-code form.
@@ -115,31 +151,39 @@ export function LoginForm({ qrToken }: { qrToken?: string }) {
           )}
         </>
       ) : !otpRequired ? (
-        <form className="form-stack" onSubmit={startLogin}>
-          <label>
-            Email
-            <input
-              autoComplete="username"
-              type="email"
-              value={email}
-              onChange={(event) => setEmail(event.target.value)}
-              required
-            />
-          </label>
-          <label>
-            Password
-            <input
-              autoComplete="current-password"
-              type="password"
-              value={password}
-              onChange={(event) => setPassword(event.target.value)}
-              required
-            />
-          </label>
-          <button className="button button-primary" disabled={busy} type="submit">
-            {busy ? "Signing in…" : "Continue"}
-          </button>
-        </form>
+        <>
+          <a className="button button-secondary button-oauth" href="/api/auth/google">
+            Sign in with Google
+          </a>
+          <p className="auth-divider muted" role="separator">
+            or continue with your email
+          </p>
+          <form className="form-stack" onSubmit={startLogin}>
+            <label>
+              Email
+              <input
+                autoComplete="username"
+                type="email"
+                value={email}
+                onChange={(event) => setEmail(event.target.value)}
+                required
+              />
+            </label>
+            <label>
+              Password
+              <input
+                autoComplete="current-password"
+                type="password"
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                required
+              />
+            </label>
+            <button className="button button-primary" disabled={busy} type="submit">
+              {busy ? "Signing in…" : "Continue"}
+            </button>
+          </form>
+        </>
       ) : (
         <form className="form-stack" onSubmit={verifyOtp}>
           <label>

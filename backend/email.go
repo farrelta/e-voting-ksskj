@@ -23,7 +23,7 @@ type SMTPMailer struct {
 	from     mail.Address
 }
 
-func newSMTPMailer(cfg *Config) (*SMTPMailer, error) {
+func newSMTPMailer(cfg *Config) (OTPMailer, error) {
 	if cfg.SMTPHost == "" {
 		return nil, nil
 	}
