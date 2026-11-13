@@ -1,0 +1,60 @@
+goos: linux
+goarch: amd64
+pkg: github.com/farrelta/e-voting-ksskj/backend-go/cryptoutil
+cpu: AMD Ryzen 7 8840HS w/ Radeon 780M Graphics     
+BenchmarkSchemeKeyGen/HE-BFV-Full-16         	     100	   5916509 ns/op	    393304 pub_bytes	    196648 sec_bytes	 5214987 B/op	  175840 allocs/op
+BenchmarkSchemeKeyGen/HE-BFV-Full-16         	     100	   5812832 ns/op	    393304 pub_bytes	    196648 sec_bytes	 5214986 B/op	  175840 allocs/op
+BenchmarkSchemeKeyGen/HE-BFV-Full-16         	     100	   5769876 ns/op	    393304 pub_bytes	    196648 sec_bytes	 5214979 B/op	  175840 allocs/op
+BenchmarkSchemeKeyGen/HE-BFV-PureAdd-16      	     100	   5907503 ns/op	    393304 pub_bytes	    196648 sec_bytes	 5214987 B/op	  175840 allocs/op
+BenchmarkSchemeKeyGen/HE-BFV-PureAdd-16      	     100	   5860454 ns/op	    393304 pub_bytes	    196648 sec_bytes	 5214981 B/op	  175840 allocs/op
+BenchmarkSchemeKeyGen/HE-BFV-PureAdd-16      	      97	   5844004 ns/op	    393304 pub_bytes	    196648 sec_bytes	 5214986 B/op	  175840 allocs/op
+BenchmarkSchemeKeyGen/NoHE-AES256GCM-16      	 4138916	       138.3 ns/op	        32.00 pub_bytes	        32.00 sec_bytes	      64 B/op	       2 allocs/op
+BenchmarkSchemeKeyGen/NoHE-AES256GCM-16      	 3957738	       141.3 ns/op	        32.00 pub_bytes	        32.00 sec_bytes	      64 B/op	       2 allocs/op
+BenchmarkSchemeKeyGen/NoHE-AES256GCM-16      	 4122886	       142.8 ns/op	        32.00 pub_bytes	        32.00 sec_bytes	      64 B/op	       2 allocs/op
+BenchmarkSchemeEncrypt/HE-BFV-Full-16        	      78	   6973592 ns/op	    262478 ballot_bytes	 5878718 B/op	  175891 allocs/op
+BenchmarkSchemeEncrypt/HE-BFV-Full-16        	      88	   7070553 ns/op	    262478 ballot_bytes	 5878539 B/op	  175891 allocs/op
+BenchmarkSchemeEncrypt/HE-BFV-Full-16        	      85	   7009850 ns/op	    262478 ballot_bytes	 5879586 B/op	  175891 allocs/op
+BenchmarkSchemeEncrypt/HE-BFV-PureAdd-16     	      84	   7165525 ns/op	    262478 ballot_bytes	 5878737 B/op	  175891 allocs/op
+BenchmarkSchemeEncrypt/HE-BFV-PureAdd-16     	      88	   7181087 ns/op	    262478 ballot_bytes	 5878689 B/op	  175891 allocs/op
+BenchmarkSchemeEncrypt/HE-BFV-PureAdd-16     	      87	   7102619 ns/op	    262478 ballot_bytes	 5878286 B/op	  175891 allocs/op
+BenchmarkSchemeEncrypt/NoHE-AES256GCM-16     	 1282162	       473.1 ns/op	        32.00 ballot_bytes	    1328 B/op	       5 allocs/op
+BenchmarkSchemeEncrypt/NoHE-AES256GCM-16     	 1307683	       462.4 ns/op	        32.00 ballot_bytes	    1328 B/op	       5 allocs/op
+BenchmarkSchemeEncrypt/NoHE-AES256GCM-16     	 1270190	       452.6 ns/op	        32.00 ballot_bytes	    1328 B/op	       5 allocs/op
+BenchmarkSchemeValidate/HE-BFV-Full-16       	     141	   4337158 ns/op	 4273800 B/op	  175542 allocs/op
+BenchmarkSchemeValidate/HE-BFV-Full-16       	     139	   4287215 ns/op	 4273709 B/op	  175542 allocs/op
+BenchmarkSchemeValidate/HE-BFV-Full-16       	     139	   4288871 ns/op	 4273752 B/op	  175541 allocs/op
+BenchmarkSchemeValidate/HE-BFV-PureAdd-16    	     136	   4276013 ns/op	 4273926 B/op	  175542 allocs/op
+BenchmarkSchemeValidate/HE-BFV-PureAdd-16    	     134	   4332391 ns/op	 4273551 B/op	  175541 allocs/op
+BenchmarkSchemeValidate/HE-BFV-PureAdd-16    	     138	   4285778 ns/op	 4273769 B/op	  175542 allocs/op
+BenchmarkSchemeValidate/NoHE-AES256GCM-16    	261573019	         2.280 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSchemeValidate/NoHE-AES256GCM-16    	265652476	         2.234 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSchemeValidate/NoHE-AES256GCM-16    	267167086	         2.246 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSchemeTally/HE-BFV-Full/N=10-16     	       5	 121367908 ns/op	143474728 B/op	 5444063 allocs/op
+BenchmarkSchemeTally/HE-BFV-Full/N=10-16     	       4	 126639955 ns/op	143463198 B/op	 5444036 allocs/op
+BenchmarkSchemeTally/HE-BFV-Full/N=10-16     	       5	 124607329 ns/op	143472608 B/op	 5444053 allocs/op
+BenchmarkSchemeTally/HE-BFV-Full/N=100-16    	       1	1071885334 ns/op	1389377256 B/op	52853145 allocs/op
+BenchmarkSchemeTally/HE-BFV-Full/N=100-16    	       1	1068567170 ns/op	1389338376 B/op	52853087 allocs/op
+BenchmarkSchemeTally/HE-BFV-Full/N=100-16    	       1	1069069038 ns/op	1389352896 B/op	52853103 allocs/op
+BenchmarkSchemeTally/HE-BFV-Full/N=500-16    	       1	5251854674 ns/op	6925935112 B/op	263558497 allocs/op
+BenchmarkSchemeTally/HE-BFV-Full/N=500-16    	       1	5248595175 ns/op	6925930024 B/op	263558491 allocs/op
+BenchmarkSchemeTally/HE-BFV-Full/N=500-16    	       1	5218976344 ns/op	6925940744 B/op	263558515 allocs/op
+BenchmarkSchemeTally/HE-BFV-PureAdd/N=10-16  	      13	  43684903 ns/op	50194172 B/op	 1932039 allocs/op
+BenchmarkSchemeTally/HE-BFV-PureAdd/N=10-16  	      13	  42908925 ns/op	50194572 B/op	 1932039 allocs/op
+BenchmarkSchemeTally/HE-BFV-PureAdd/N=10-16  	      12	  43551771 ns/op	50195710 B/op	 1932041 allocs/op
+BenchmarkSchemeTally/HE-BFV-PureAdd/N=100-16 	       2	 349470096 ns/op	457588948 B/op	17734617 allocs/op
+BenchmarkSchemeTally/HE-BFV-PureAdd/N=100-16 	       2	 351002510 ns/op	457589068 B/op	17734618 allocs/op
+BenchmarkSchemeTally/HE-BFV-PureAdd/N=100-16 	       2	 348052034 ns/op	457570188 B/op	17734582 allocs/op
+BenchmarkSchemeTally/HE-BFV-PureAdd/N=500-16 	       1	1692516926 ns/op	2267973224 B/op	87967822 allocs/op
+BenchmarkSchemeTally/HE-BFV-PureAdd/N=500-16 	       1	1689181934 ns/op	2267978392 B/op	87967830 allocs/op
+BenchmarkSchemeTally/HE-BFV-PureAdd/N=500-16 	       1	1686535906 ns/op	2267976288 B/op	87967830 allocs/op
+BenchmarkSchemeTally/NoHE-AES256GCM/N=10-16  	  520093	       985.1 ns/op	    1368 B/op	      13 allocs/op
+BenchmarkSchemeTally/NoHE-AES256GCM/N=10-16  	  619839	       984.1 ns/op	    1368 B/op	      13 allocs/op
+BenchmarkSchemeTally/NoHE-AES256GCM/N=10-16  	  596310	       979.5 ns/op	    1368 B/op	      13 allocs/op
+BenchmarkSchemeTally/NoHE-AES256GCM/N=100-16 	   91004	      6159 ns/op	    1728 B/op	     103 allocs/op
+BenchmarkSchemeTally/NoHE-AES256GCM/N=100-16 	   93441	      6097 ns/op	    1728 B/op	     103 allocs/op
+BenchmarkSchemeTally/NoHE-AES256GCM/N=100-16 	   91274	      6204 ns/op	    1728 B/op	     103 allocs/op
+BenchmarkSchemeTally/NoHE-AES256GCM/N=500-16 	   20982	     28540 ns/op	    3328 B/op	     503 allocs/op
+BenchmarkSchemeTally/NoHE-AES256GCM/N=500-16 	   20846	     28391 ns/op	    3328 B/op	     503 allocs/op
+BenchmarkSchemeTally/NoHE-AES256GCM/N=500-16 	   20794	     28301 ns/op	    3328 B/op	     503 allocs/op
+PASS
+ok  	github.com/farrelta/e-voting-ksskj/backend-go/cryptoutil	70.621s

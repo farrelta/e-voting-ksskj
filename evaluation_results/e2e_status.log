@@ -1,0 +1,2 @@
+e2e suite: ping db: failed to connect to `host=localhost user=evoting_app database=evoting_db`: dial error (dial tcp 127.0.0.1:5433: connect: connection refused)
+exit status 1

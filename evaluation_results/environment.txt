@@ -1,0 +1,11 @@
+=== Environment Info ===
+2026-11-13T06:54:10+07:00
+Linux sss 7.3.4-1-cachyos #1 SMP PREEMPT_DYNAMIC Thu, 12 Nov 2026 08:16:20 +0000 x86_64 GNU/Linux
+go version go1.27.4-X:nodwarf5 linux/amd64
+CPU(s):                                  16
+On-line CPU(s) list:                     0-15
+Model name:                              AMD Ryzen 7 8840HS w/ Radeon 780M Graphics
+Thread(s) per core:                      2
+Core(s) per socket:                      8
+CPU(s) scaling MHz:                      54%
+NUMA node0 CPU(s):                       0-15
