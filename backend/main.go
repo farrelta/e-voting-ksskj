@@ -23,6 +23,7 @@ type App struct {
 	qr             *QRService
 	mailer         OTPMailer
 	ballotVerifier BallotVerifier
+	oauth          *OAuthService
 }
 
 func (a *App) routes() http.Handler {
@@ -34,6 +35,13 @@ func (a *App) routes() http.Handler {
 	api.HandleFunc("POST /api/login/qr", a.handleQRLogin)
 	api.HandleFunc("GET /api/me", a.handleMe)
 	api.HandleFunc("POST /api/logout", a.handleLogout)
+
+	// Google sign-in is only registered when it is configured, so an
+	// unconfigured deployment exposes no half-working authentication route.
+	if a.cfg.OAuthEnabled {
+		api.HandleFunc("GET /api/auth/google", a.handleOAuthStart)
+		api.HandleFunc("GET /api/auth/google/callback", a.handleOAuthCallback)
+	}
 
 	api.Handle("GET /api/elections", requireLogin(http.HandlerFunc(a.handleListElections)))
 	api.Handle("GET /api/elections/{electionId}/candidates",
@@ -133,6 +141,7 @@ func main() {
 		mailer:         mailer,
 		qr:             newQRService(rdb),
 		ballotVerifier: NewBallotVerifier(pool, cfg.MasterKey),
+		oauth:          newOAuthService(cfg, rdb),
 	}
 
 	srv := &http.Server{
