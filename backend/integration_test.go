@@ -4,7 +4,9 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -15,6 +17,8 @@ import (
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
+	"github.com/cloudflare/circl/blindsign/blindrsa"
+	"github.com/farrelta/e-voting-ksskj/backend-go/anonymousballot"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
@@ -47,9 +51,9 @@ func testAdmin(t *testing.T, a *App) (adminID string, createdElections *[]string
 	elections := &[]string{}
 	t.Cleanup(func() {
 		for _, id := range *elections {
-			a.db.Exec(ctx, `DELETE FROM evoting.encrypted_ballots WHERE election_id = $1::uuid`, id)
+			a.db.Exec(ctx, `DELETE FROM evoting.anonymous_ballots WHERE election_id = $1::uuid`, id)
+			a.db.Exec(ctx, `DELETE FROM evoting.credential_issuances WHERE election_id = $1::uuid`, id)
 			a.db.Exec(ctx, `DELETE FROM evoting.voter_eligibility WHERE election_id = $1::uuid`, id)
-			a.db.Exec(ctx, `DELETE FROM evoting.receipts WHERE election_id = $1::uuid`, id)
 			a.db.Exec(ctx, `DELETE FROM evoting.candidates WHERE election_id = $1::uuid`, id)
 			a.db.Exec(ctx, `DELETE FROM evoting.elections WHERE id = $1::uuid`, id)
 		}
@@ -74,6 +78,12 @@ func newTestElection(t *testing.T, a *App, adminID string, created *[]string, st
 		t.Fatal(err)
 	}
 	*created = append(*created, id)
+	// Most fixtures need an issuer record for eligibility but never use its key.
+	if _, err := a.db.Exec(context.Background(), `
+		INSERT INTO evoting.anonymous_issuer_keys (election_id, public_key, private_key_enc)
+		VALUES ($1::uuid, ''::bytea, ''::bytea)`, id); err != nil {
+		t.Fatal(err)
+	}
 	return id
 }
 
@@ -167,11 +177,12 @@ func TestAddParticipants(t *testing.T) {
 	if role != "voter" || !verified || hash != lockedPasswordHash {
 		t.Fatalf("new account = role %q verified %v hash %q", role, verified, hash)
 	}
-	var eligible, receipts int
-	a.db.QueryRow(ctx, `SELECT count(*) FROM evoting.voter_eligibility WHERE election_id = $1::uuid AND receipt_id IS NOT NULL`, electionID).Scan(&eligible)
-	a.db.QueryRow(ctx, `SELECT count(*) FROM evoting.receipts WHERE election_id = $1::uuid`, electionID).Scan(&receipts)
-	if eligible != 2 || receipts != 2 {
-		t.Fatalf("eligibility rows = %d, receipts = %d, want 2 and 2", eligible, receipts)
+	var eligible int
+	if err := a.db.QueryRow(ctx, `SELECT count(*) FROM evoting.voter_eligibility WHERE election_id = $1::uuid`, electionID).Scan(&eligible); err != nil {
+		t.Fatal(err)
+	}
+	if eligible != 2 {
+		t.Fatalf("eligibility rows = %d, want 2", eligible)
 	}
 
 	//case for adding the same person again
@@ -223,61 +234,100 @@ func TestBulkEndpointRejectsOtherDomains(t *testing.T) {
 	}
 }
 
-type acceptAllVerifier struct{}
-
-func (acceptAllVerifier) Verify(context.Context, string, []byte, []byte) error { return nil }
-
 func TestBallotRejectedOutsideVotingWindow(t *testing.T) {
 	a := testApp(t)
-	a.ballotVerifier = acceptAllVerifier{}
+	a.cfg.Env, a.cfg.AnonymousBallotPilot = "development", true
+	a.cfg.MasterKey = make([]byte, 32)
 	ctx := context.Background()
 	adminID, created := testAdmin(t, a)
-	h := time.Hour
 
-	submit := func(electionID, voterID, receiptID string) int {
-		body, _ := json.Marshal(map[string]string{
-			"receipt_id":     receiptID,
-			"encrypted_vote": base64.StdEncoding.EncodeToString([]byte("ciphertext")),
-			"proof":          base64.StdEncoding.EncodeToString([]byte("proof")),
-		})
-		req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
-		req.SetPathValue("electionId", electionID)
-		req = req.WithContext(context.WithValue(req.Context(), ctxKey{},
-			&Session{User: &SessionUser{ID: voterID, Email: "x", Role: "voter"}}))
-		rec := httptest.NewRecorder()
-		a.handleSubmitBallot(rec, req)
-		return rec.Code
-	}
-	setup := func(start, end time.Duration) (electionID, voterID, receiptID string) {
-		electionID = newTestElection(t, a, adminID, created, "active_voting", start, end)
-		email := "it-voter-" + uuid.NewString()[:8] + "@ugm.ac.id"
-		sum, err := a.addParticipants(ctx, electionID, []string{email})
-		if err != nil || len(sum.Added) != 1 {
-			t.Fatalf("setup: %v %+v", err, sum)
-		}
-		voterID = sum.Added[0].UserID
-		if err := a.db.QueryRow(ctx, `SELECT receipt_id::text FROM evoting.voter_eligibility WHERE election_id = $1::uuid`, electionID).Scan(&receiptID); err != nil {
+	submit := func(start, end time.Duration) int {
+		t.Helper()
+		electionID := newTestElection(t, a, adminID, created, "active_voting", start, end)
+		id := uuid.MustParse(electionID)
+		pub, private, err := newAnonymousIssuerKey(a.cfg.MasterKey)
+		if err != nil {
 			t.Fatal(err)
 		}
-		return
+		ballotKey, _, err := anonymousballot.GenerateKey()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, query := range []struct {
+			sql  string
+			args []any
+		}{
+			{`UPDATE evoting.anonymous_issuer_keys SET public_key = $2, private_key_enc = $3 WHERE election_id = $1`, []any{id, pub, private}},
+			{`INSERT INTO evoting.election_keys
+				(election_id, kem_public_key, kem_private_key, dsa_public_key, dsa_private_key, he_public_key, he_secret_key_fingerprint)
+				VALUES ($1, ''::bytea, ''::bytea, ''::bytea, ''::bytea, $2, 'unused')`, []any{id, ballotKey}},
+			{`INSERT INTO evoting.candidates (election_id, name, position) VALUES ($1, 'Candidate', 0)`, []any{id}},
+		} {
+			if _, err := a.db.Exec(ctx, query.sql, query.args...); err != nil {
+				t.Fatal(err)
+			}
+		}
+		parsed, err := x509.ParsePKIXPublicKey(pub)
+		if err != nil {
+			t.Fatal(err)
+		}
+		client, err := blindrsa.NewClient(blindrsa.SHA384PSSRandomized, parsed.(*rsa.PublicKey))
+		if err != nil {
+			t.Fatal(err)
+		}
+		nonce := make([]byte, credentialNonceBytes)
+		if _, err := rand.Read(nonce); err != nil {
+			t.Fatal(err)
+		}
+		msg, err := client.Prepare(rand.Reader, append([]byte(credentialDomain+electionID+"/"), nonce...))
+		if err != nil {
+			t.Fatal(err)
+		}
+		blinded, state, err := client.Blind(rand.Reader, msg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response, err := signCredential(a.cfg.MasterKey, pub, private, blinded)
+		if err != nil {
+			t.Fatal(err)
+		}
+		signature, err := client.Finalize(state, response)
+		if err != nil {
+			t.Fatal(err)
+		}
+		token := append(msg, signature...)
+		digest, err := verifySignedCredential(id, token, pub)
+		if err != nil {
+			t.Fatal(err)
+		}
+		manifest, err := loadBallotManifest(ctx, a.db, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		vote, proof, err := anonymousballot.Prepare(manifest.scope(id, digest), ballotKey, 1, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, err := json.Marshal(map[string][]byte{"token": token, "encrypted_vote": vote, "proof": proof})
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.SetPathValue("electionId", electionID)
+		rec := httptest.NewRecorder()
+		a.handleAnonymousBallot(rec, req)
+		return rec.Code
 	}
 
-	e, v, r := setup(-h, -time.Minute) //status says active, but the window has ended
-	if code := submit(e, v, r); code != http.StatusConflict {
+	if code := submit(-time.Hour, -time.Minute); code != http.StatusConflict {
 		t.Errorf("after the window: status %d, want 409", code)
 	}
-	e, v, r = setup(h, 2*h) //status set early by hand, window not started
-	if code := submit(e, v, r); code != http.StatusConflict {
+	if code := submit(time.Hour, 2*time.Hour); code != http.StatusConflict {
 		t.Errorf("before the window: status %d, want 409", code)
 	}
-	e, v, r = setup(-h, h) //inside the window
-	if code := submit(e, v, r); code != http.StatusCreated {
+	if code := submit(-time.Hour, time.Hour); code != http.StatusCreated {
 		t.Errorf("inside the window: status %d, want 201", code)
-	}
-	var voted bool
-	a.db.QueryRow(ctx, `SELECT has_voted FROM evoting.voter_eligibility WHERE election_id = $1::uuid`, e).Scan(&voted)
-	if !voted {
-		t.Error("a ballot accepted inside the window must mark the voter as having voted")
 	}
 }
 

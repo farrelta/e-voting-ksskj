@@ -207,27 +207,6 @@ CROSS JOIN evoting.users AS u
 WHERE e.title = 'Database Test Election'
   AND u.email = 'dbtest.voter@example.test';
 
-DO $$
-DECLARE
-    v_has_voted boolean;
-BEGIN
-    SELECT ve.has_voted
-      INTO v_has_voted
-      FROM evoting.voter_eligibility AS ve
-      JOIN evoting.elections AS e
-        ON e.id = ve.election_id
-      JOIN evoting.users AS u
-        ON u.id = ve.user_id
-     WHERE e.title = 'Database Test Election'
-       AND u.email = 'dbtest.voter@example.test';
-
-    IF v_has_voted IS DISTINCT FROM false THEN
-        RAISE EXCEPTION 'New voter should have has_voted = false';
-    END IF;
-
-    RAISE NOTICE 'PASS: voter eligibility created with has_voted = false.';
-END $$;
-
 -- ------------------------------------------------------------
 -- 8. Duplicate voter registration
 -- ------------------------------------------------------------
@@ -263,204 +242,57 @@ BEGIN
 END $$;
 
 -- ------------------------------------------------------------
--- 9. Encrypted ballot insert
+-- 9. Anonymous ballot storage, uniqueness and voter separation
 -- ------------------------------------------------------------
 \echo ''
-\echo '=== 9. ENCRYPTED BALLOT INSERT TEST ==='
-
-INSERT INTO evoting.encrypted_ballots
-    (election_id, encrypted_vote, proof, ballot_hash)
-SELECT
-    e.id,
-    decode('deadbeef', 'hex'),
-    decode('cafebabe', 'hex'),
-    'dbtest-ballot-hash-001'
-FROM evoting.elections AS e
-WHERE e.title = 'Database Test Election';
-
-DO $$
-DECLARE
-    v_ballot_count integer;
-BEGIN
-    SELECT COUNT(*)
-      INTO v_ballot_count
-      FROM evoting.encrypted_ballots AS eb
-      JOIN evoting.elections AS e
-        ON e.id = eb.election_id
-     WHERE e.title = 'Database Test Election';
-
-    IF v_ballot_count <> 1 THEN
-        RAISE EXCEPTION 'Expected 1 encrypted ballot, found %', v_ballot_count;
-    END IF;
-
-    RAISE NOTICE 'PASS: encrypted ballot inserted.';
-END $$;
-
--- ------------------------------------------------------------
--- 10. Ballot hash uniqueness
--- ------------------------------------------------------------
-\echo ''
-\echo '=== 10. UNIQUE BALLOT HASH TEST ==='
+\echo '=== 9. ANONYMOUS BALLOT STORAGE TEST ==='
 
 DO $$
 DECLARE
     v_election_id uuid;
 BEGIN
-    SELECT id
-      INTO v_election_id
-      FROM evoting.elections
-     WHERE title = 'Database Test Election';
+    SELECT id INTO STRICT v_election_id FROM evoting.elections
+    WHERE title = 'Database Test Election';
+
+    INSERT INTO evoting.anonymous_ballots
+        (election_id, token_digest, credential, request_digest, encrypted_vote, proof, ballot_hash)
+    VALUES (v_election_id, decode(repeat('01', 32), 'hex'), decode('1234', 'hex'),
+        decode(repeat('02', 32), 'hex'), decode('deadbeef', 'hex'), decode('cafebabe', 'hex'), repeat('a', 64));
 
     BEGIN
-        INSERT INTO evoting.encrypted_ballots
-            (election_id, encrypted_vote, ballot_hash)
-        VALUES
-            (v_election_id, decode('11223344', 'hex'), 'dbtest-ballot-hash-001');
+        INSERT INTO evoting.anonymous_ballots
+            (election_id, token_digest, credential, request_digest, encrypted_vote, proof, ballot_hash)
+        SELECT election_id, token_digest, credential, request_digest, encrypted_vote, proof, repeat('b', 64)
+        FROM evoting.anonymous_ballots WHERE election_id = v_election_id;
+        RAISE EXCEPTION 'Duplicate voting credential was accepted';
+    EXCEPTION WHEN unique_violation THEN
+        RAISE NOTICE 'PASS: duplicate voting credential rejected.';
+    END;
 
+    BEGIN
+        INSERT INTO evoting.anonymous_ballots
+            (election_id, token_digest, credential, request_digest, encrypted_vote, proof, ballot_hash)
+        SELECT election_id, decode(repeat('03', 32), 'hex'), credential, request_digest, encrypted_vote, proof, ballot_hash
+        FROM evoting.anonymous_ballots WHERE election_id = v_election_id;
         RAISE EXCEPTION 'Duplicate ballot hash was accepted';
-    EXCEPTION
-        WHEN unique_violation THEN
-            RAISE NOTICE 'PASS: duplicate ballot hash rejected.';
+    EXCEPTION WHEN unique_violation THEN
+        RAISE NOTICE 'PASS: duplicate ballot hash rejected.';
     END;
+
+    IF to_regclass('evoting.receipts') IS NOT NULL OR to_regclass('evoting.encrypted_ballots') IS NOT NULL OR EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'evoting' AND table_name = 'anonymous_ballots'
+            AND column_name IN ('user_id', 'receipt_id')
+    ) THEN
+        RAISE EXCEPTION 'Legacy ballot storage or identity links still exist';
+    END IF;
 END $$;
 
 -- ------------------------------------------------------------
--- 11. Receipt insert
+-- 10. Foreign-key integrity
 -- ------------------------------------------------------------
 \echo ''
-\echo '=== 11. RECEIPT INSERT TEST ==='
-
-INSERT INTO evoting.receipts
-    (election_id, receipt_code)
-SELECT
-    e.id,
-    'DBTEST-RECEIPT-001'
-FROM evoting.elections AS e
-WHERE e.title = 'Database Test Election';
-
-\echo 'PASS: receipt inserted successfully.'
-
--- ------------------------------------------------------------
--- 12. Receipt uniqueness
--- ------------------------------------------------------------
-\echo ''
-\echo '=== 12. UNIQUE RECEIPT CODE TEST ==='
-
-DO $$
-DECLARE
-    v_election_id uuid;
-BEGIN
-    SELECT id
-      INTO v_election_id
-      FROM evoting.elections
-     WHERE title = 'Database Test Election';
-
-    BEGIN
-        INSERT INTO evoting.receipts
-            (election_id, receipt_code)
-        VALUES
-            (v_election_id, 'DBTEST-RECEIPT-001');
-
-        RAISE EXCEPTION 'Duplicate receipt code was accepted';
-    EXCEPTION
-        WHEN unique_violation THEN
-            RAISE NOTICE 'PASS: duplicate receipt code rejected.';
-    END;
-END $$;
-
--- ------------------------------------------------------------
--- 13. One-vote enforcement
--- ------------------------------------------------------------
-\echo ''
-\echo '=== 13. ONE-VOTE ENFORCEMENT TEST ==='
-
-DO $$
-DECLARE
-    v_election_id uuid;
-    v_voter_id uuid;
-    v_affected_rows integer;
-BEGIN
-    SELECT id
-      INTO v_election_id
-      FROM evoting.elections
-     WHERE title = 'Database Test Election';
-
-    SELECT id
-      INTO v_voter_id
-      FROM evoting.users
-     WHERE email = 'dbtest.voter@example.test';
-
-    UPDATE evoting.voter_eligibility AS ve
-       SET has_voted = true
-     WHERE ve.election_id = v_election_id
-       AND ve.user_id = v_voter_id
-       AND ve.has_voted = false;
-
-    GET DIAGNOSTICS v_affected_rows = ROW_COUNT;
-
-    IF v_affected_rows <> 1 THEN
-        RAISE EXCEPTION
-            'First vote should update exactly 1 row, updated %',
-            v_affected_rows;
-    END IF;
-
-    UPDATE evoting.voter_eligibility AS ve
-       SET has_voted = true
-     WHERE ve.election_id = v_election_id
-       AND ve.user_id = v_voter_id
-       AND ve.has_voted = false;
-
-    GET DIAGNOSTICS v_affected_rows = ROW_COUNT;
-
-    IF v_affected_rows <> 0 THEN
-        RAISE EXCEPTION
-            'Second vote should update 0 rows, updated %',
-            v_affected_rows;
-    END IF;
-
-    RAISE NOTICE 'PASS: one-vote enforcement works (1st = 1 row, 2nd = 0 rows).';
-END $$;
-
--- ------------------------------------------------------------
--- 14. Anonymity schema checks
--- ------------------------------------------------------------
-\echo ''
-\echo '=== 14. BALLOT / VOTER SEPARATION TEST ==='
-
-DO $$
-DECLARE
-    v_count integer;
-BEGIN
-    SELECT COUNT(*)
-      INTO v_count
-      FROM information_schema.columns
-     WHERE table_schema = 'evoting'
-       AND table_name = 'encrypted_ballots'
-       AND column_name = 'user_id';
-
-    IF v_count <> 0 THEN
-        RAISE EXCEPTION 'encrypted_ballots unexpectedly contains user_id';
-    END IF;
-
-    SELECT COUNT(*)
-      INTO v_count
-      FROM information_schema.columns
-     WHERE table_schema = 'evoting'
-       AND table_name = 'receipts'
-       AND column_name IN ('user_id', 'ballot_id');
-
-    IF v_count <> 0 THEN
-        RAISE EXCEPTION 'receipts unexpectedly contains user_id or ballot_id';
-    END IF;
-
-    RAISE NOTICE 'PASS: encrypted ballots have no user_id; receipts have no user_id/ballot_id.';
-END $$;
-
--- ------------------------------------------------------------
--- 15. Foreign-key integrity
--- ------------------------------------------------------------
-\echo ''
-\echo '=== 15. FOREIGN KEY INTEGRITY TEST ==='
+\echo '=== 10. FOREIGN KEY INTEGRITY TEST ==='
 
 DO $$
 BEGIN
@@ -481,7 +313,7 @@ END $$;
 -- Summary
 -- ------------------------------------------------------------
 \echo ''
-\echo '=== 16. TEST DATA SUMMARY ==='
+\echo '=== 11. TEST DATA SUMMARY ==='
 
 SELECT
     (SELECT COUNT(*)
@@ -499,13 +331,9 @@ SELECT
        JOIN evoting.elections AS e ON e.id = ve.election_id
       WHERE e.title = 'Database Test Election') AS test_eligibility,
     (SELECT COUNT(*)
-       FROM evoting.encrypted_ballots AS eb
-       JOIN evoting.elections AS e ON e.id = eb.election_id
-      WHERE e.title = 'Database Test Election') AS test_ballots,
-    (SELECT COUNT(*)
-       FROM evoting.receipts AS r
-       JOIN evoting.elections AS e ON e.id = r.election_id
-      WHERE e.title = 'Database Test Election') AS test_receipts;
+       FROM evoting.anonymous_ballots AS ab
+       JOIN evoting.elections AS e ON e.id = ab.election_id
+      WHERE e.title = 'Database Test Election') AS test_ballots;
 
 \echo ''
 \echo '============================================================'

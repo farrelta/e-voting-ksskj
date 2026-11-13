@@ -74,39 +74,73 @@ publicly.
 
 ### Existing database
 
-If you already have a database volume from before the receipt-to-ballot link
-was added, start only the database first:
+Fresh databases get the latest schema from `database/schema.sql`. If an
+existing database is already through migration `009`, run the upgrade below
+with only `010_drop_voting_mode_and_pilot_only.sql` in the migration list.
+For older volumes, start the list at the first migration you still need.
 
-```powershell
-docker compose up -d db
+```bash
+(
+  set -e
+  docker compose stop frontend backend
+  docker compose up -d --wait db
+  backup="$(mktemp "${TMPDIR:-/tmp}/evoting-before-upgrade.XXXXXX")"
+  docker compose exec -T db pg_dump -U evoting_app -Fc evoting_db > "$backup"
+  printf 'Database backup saved to %s\n' "$backup"
+  for migration in \
+    002_candidate_position_and_election_keys.sql \
+    002_election_crypto_and_results.sql \
+    003_consolidate_election_keys.sql \
+    004_anonymous_voting.sql \
+    005_anonymous_issuer_keys.sql \
+    006_anonymous_ballot_credentials.sql \
+    007_default_anonymous_voting.sql \
+    008_drop_legacy_ballot_tables.sql \
+    009_drop_created_at.sql \
+    010_drop_voting_mode_and_pilot_only.sql
+  do
+    docker compose exec -T db psql -v ON_ERROR_STOP=1 -U evoting_app -d evoting_db \
+      < "database/migrations/$migration"
+  done
+  docker compose up --build -d
+)
 ```
 
-Apply the migration from the repository root:
+Keep the database dump in secure storage. Run both historical `002` files in
+the order shown, even if one has already been applied. Migration `003` uses
+`election_keys` as the canonical key table. If it reports legacy data, resolve
+the discrepancy with the database owner before proceeding. The cleanup
+transaction rolls back when that check fails.
 
-```powershell
-Get-Content -Raw database\migrations\001_receipt_ballot_link.sql |
-  docker compose exec -T db psql -U evoting_app -d evoting_db
-```
+Migrations `004` through `006` add anonymous voting storage and `007` changes
+the default for new elections. Migration `008` drops `receipts` and
+`encrypted_ballots`, removes `receipt_id` and `has_voted` from voter
+eligibility, and closes all receipt elections. The old ballots and receipt
+codes are deleted. Election metadata, eligible voter lists, and results
+already saved in `election_results` are retained. Complete and save any
+outstanding legacy tally with the old version before applying `008` if
+you need those results. The historical `001` migration is superseded by
+this cleanup and is not needed in the upgrade sequence.
 
-If your database predates candidate ordering and election keys, also apply
-`002_candidate_position_and_election_keys.sql` the same way (it is safe to
-re-run):
+Migration `009` drops `created_at` from users, elections, and election keys.
+The voting schedule and the timestamp on the aggregate tally still apply.
 
-```powershell
-Get-Content -Raw database\migrations\002_candidate_position_and_election_keys.sql |
-  docker compose exec -T db psql -U evoting_app -d evoting_db
-```
+Migration `010` drops `elections.voting_mode` and
+`anonymous_issuer_keys.pilot_only`. It removes credential-only test keys and
+archives elections without an issuer. Existing anonymous ballot elections
+keep their issuer keys, ballots, and trackers.
 
-Then start or rebuild the remaining services:
+### Back up the tally key
 
-```powershell
-docker compose up --build
-```
-
-Fresh databases get the latest schema directly from `database\schema.sql`.
-Existing voter eligibility and receipt rows cannot be matched automatically:
-the old schema did not store their association. Reconcile those records before
-expecting existing registrations to appear in the voter dashboard.
+Create elections from the admin page on HTTPS or localhost. Choose a backup
+passphrase and download the encrypted tally key file before leaving the page.
+Keep a copy of the file and store the passphrase separately. After voting ends,
+open **Tally votes** on the election card and provide both. For elections made
+before this UI was added, use the existing tally API with the original HE key
+if you saved it. Its database fingerprint cannot recover a lost key. Elections
+that predate key provisioning need their original keys restored. For a
+disposable election with no voters or ballots, create a replacement election
+and save its new backup.
 
 ### Troubleshooting
 
@@ -132,15 +166,18 @@ npm run typecheck
 npm run build
 ```
 
-## Ballot cryptography
+## Anonymous elections
 
-Ballot submission is intentionally disabled until an audited encryption and
-zero-knowledge proof protocol, election public key, and proof verification
-process are configured and wired into the Go API. The frontend does not
-generate an invented proof, and the API rejects ballot submissions until a
-verifier is installed. Candidate selections remain in the browser. Do not
-enable ballot submission by substituting generic encryption or by sending a
-plain candidate identifier to the API.
+New elections start as anonymous drafts. Add candidates and eligible voters,
+save the encrypted tally key backup, then open registration. After voting
+opens, eligible voters can cast an encrypted ballot and save the ballot hash.
+The public verification page accepts that hash to check whether the ballot
+was recorded. Legacy receipt codes expired when the old tables were removed.
+
+The anonymous prototype is enabled by default in development. Set
+`ANONYMOUS_BALLOT_PILOT=false` to disable it. It remains unavailable outside
+development. See [anonymous voting](database/anonymous-voting.md) for the
+local workflow and the limits of the prototype.
 
 ## Participants and the automatic schedule
 

@@ -21,9 +21,10 @@ func (a *App) advanceElectionStatuses(ctx context.Context) (closed, opened int64
 	closed = tag.RowsAffected()
 
 	tag, err = a.db.Exec(ctx, `
-		UPDATE evoting.elections
+		UPDATE evoting.elections e
 		SET status = 'active_voting'
-		WHERE status = 'registration' AND voting_start <= NOW() AND voting_end > NOW()`)
+		WHERE status = 'registration' AND voting_start <= NOW() AND voting_end > NOW()
+			AND EXISTS (SELECT 1 FROM evoting.anonymous_issuer_keys k WHERE k.election_id = e.id)`)
 	if err != nil {
 		return closed, 0, err
 	}

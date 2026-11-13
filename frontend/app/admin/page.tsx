@@ -16,6 +16,7 @@ import {
 import type { Candidate, VoterStatus } from "@/lib/backend";
 import { ConfirmSubmitButton } from "./confirm-submit-button";
 import { ElectionForm } from "./election-form";
+import { TallyForm } from "./tally-form";
 import { VoterPanel } from "./voter-panel";
 
 export default async function AdminPage({
@@ -23,7 +24,7 @@ export default async function AdminPage({
 }: {
   searchParams: Promise<{ notice?: string; error?: string }>;
 }) {
-  const [{ user }, { elections }, params] = await Promise.all([
+  const [{ user }, { elections, ballot_pilot }, params] = await Promise.all([
     getSessionUser(),
     getElections(),
     searchParams,
@@ -67,7 +68,14 @@ export default async function AdminPage({
             <h2>Create an election</h2>
           </div>
         </div>
-        <ElectionForm />
+        {ballot_pilot ? (
+          <>
+            <p className="muted">New elections start as anonymous drafts. Voters verify recorded ballots with a ballot hash.</p>
+            <ElectionForm />
+          </>
+        ) : (
+          <p className="muted">Election creation is available in development with anonymous voting enabled.</p>
+        )}
       </section>
 
       <section className="panel section-panel">
@@ -89,7 +97,7 @@ export default async function AdminPage({
                   <option
                     key={election.id}
                     value={election.id}
-                    disabled={election.status === "active_voting" || election.status === "completed"}
+                    disabled={!election.has_issuer || election.status !== "draft"}
                   >
                     {election.title}{election.status === "active_voting" || election.status === "completed" ? " (voting locked)" : ""}
                   </option>
@@ -133,18 +141,29 @@ export default async function AdminPage({
                       {election.status.replaceAll("_", " ")}
                     </span>
                     <h2>{election.title}</h2>
+                    {election.has_issuer && (
+                      <p className="muted">Anonymous ballot pilot</p>
+                    )}
+                    {!election.has_issuer && <p className="muted">Archived election</p>}
                   </div>
                 </div>
-                <details className="edit-details">
+                {(election.has_issuer && election.status === "draft") && <details className="edit-details">
                   <summary>Edit election details</summary>
                   <ElectionForm election={election} />
-                </details>
+                </details>}
+                {(ballot_pilot && election.has_issuer) &&
+                  election.status === "completed" && Date.parse(election.voting_end) <= Date.now() && (
+                  <details className="edit-details">
+                    <summary>Tally votes</summary>
+                    <TallyForm electionId={election.id} />
+                  </details>
+                )}
                 <details className="edit-details candidate-management">
                   <summary>Manage candidates ({candidatesByElection.get(election.id)?.length ?? 0})</summary>
                   {candidatesByElection.get(election.id)?.length ? (
                     <div className="candidate-management-list">
                       {(candidatesByElection.get(election.id) ?? []).map((candidate) => {
-                        const candidatesLocked = election.status === "active_voting" || election.status === "completed";
+                        const candidatesLocked = !election.has_issuer || election.status !== "draft";
                         return (
                           <div className="candidate-management-item" key={candidate.id}>
                             <form className="candidate-edit-form" action={updateCandidate}>
@@ -176,47 +195,35 @@ export default async function AdminPage({
                   ) : (
                     <p className="muted">No candidates have been added to this election.</p>
                   )}
-                  {(election.status === "draft" || election.status === "registration") ? (
-                    <p className="candidate-management-help">Candidate details can be changed until voting starts.</p>
-                  ) : <p className="candidate-management-help">Candidate details are locked after voting starts.</p>}
+                  {election.has_issuer && (
+                    <p className="candidate-management-help">The candidate list freezes when registration opens.</p>
+                  )}
                 </details>
                 <VoterPanel
                   electionId={election.id}
                   status={election.status}
+                  anonymous={election.has_issuer}
+                  recordedBallots={election.recorded_ballots}
                   voters={votersByElection.get(election.id) ?? []}
                 />
-                <p className="candidate-management-help">
-                  Open voter registration to publish this election. After that, voting
-                  starts and stops automatically at the voting start and end times above.
-                </p>
+                {ballot_pilot && election.has_issuer && election.status === "draft" && (
+                  <p className="candidate-management-help">
+                    Open voter registration to publish this election. Voting opens and closes at the scheduled times.
+                  </p>
+                )}
                 <div className="milestone-form">
-                  <form action={updateElectionStatus}>
+                  {(ballot_pilot && election.has_issuer && election.status === "draft") && <form action={updateElectionStatus}>
                     <input type="hidden" name="election_id" value={election.id} />
                     <input type="hidden" name="status" value="registration" />
                     <button className="button button-secondary" type="submit">
                       Open voter registration
                     </button>
-                  </form>
-                  <form className="milestone-status-form" action={updateElectionStatus}>
-                    <input type="hidden" name="election_id" value={election.id} />
-                    <label>
-                      Set status
-                      <select name="status" defaultValue={election.status}>
-                        <option value="draft">Draft</option>
-                        <option value="registration">Registration</option>
-                        <option value="active_voting">Active voting</option>
-                        <option value="completed">Completed</option>
-                      </select>
-                    </label>
-                    <button className="button button-secondary" type="submit">
-                      Update status
-                    </button>
-                  </form>
+                  </form>}
                   <form action={deleteElection}>
                     <input type="hidden" name="election_id" value={election.id} />
                     <ConfirmSubmitButton
                       className="button button-danger"
-                      message={`Delete “${election.title}”? Elections with voter registrations or ballots cannot be deleted.`}
+                      message={`Delete “${election.title}”? Elections with eligible voters, recorded ballots, or saved results cannot be deleted.`}
                     >
                       Delete election
                     </ConfirmSubmitButton>

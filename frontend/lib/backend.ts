@@ -17,10 +17,9 @@ export type Election = {
   voting_start: string;
   voting_end: string;
   status: "draft" | "registration" | "active_voting" | "completed";
+  has_issuer: boolean;
+  recorded_ballots?: number;
   is_registered?: boolean;
-  has_voted?: boolean;
-  receipt_id?: string;
-  receipt_code?: string;
 };
 
 export type Candidate = {
@@ -54,14 +53,7 @@ export async function readApiResponse<T>(response: Response): Promise<T> {
 
 export async function getElections() {
   const response = await backendRequest("/api/elections");
-  return readApiResponse<{ elections: Election[] }>(response);
-}
-
-export async function getCandidates(electionId: string) {
-  const response = await backendRequest(
-    `/api/elections/${encodeURIComponent(electionId)}/candidates`,
-  );
-  return readApiResponse<{ candidates: Candidate[] }>(response);
+  return readApiResponse<{ elections: Election[]; ballot_pilot: boolean }>(response);
 }
 
 export async function getAdminCandidates(electionId: string) {
@@ -72,9 +64,9 @@ export async function getAdminCandidates(electionId: string) {
 }
 
 export type VoterStatus = {
+  credential_issued: boolean;
   user_id: string;
   email: string;
-  has_voted: boolean;
 };
 
 export async function getVoters(electionId: string) {

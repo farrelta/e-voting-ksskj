@@ -1,12 +1,11 @@
 import Link from "next/link";
 import { LogoutButton } from "@/app/components/logout-button";
 import {
-  getCandidates,
   getElections,
   getSessionUser,
 } from "@/lib/backend";
-import type { Candidate } from "@/lib/backend";
-import { BallotForm } from "./ballot-form";
+import { CredentialForm } from "./credential-form";
+import { AnonymousBallotForm } from "./anonymous-ballot-form";
 
 function displayDate(value: string) {
   return new Intl.DateTimeFormat(undefined, {
@@ -20,26 +19,11 @@ export default async function DashboardPage({
 }: {
   searchParams: Promise<{ notice?: string; error?: string }>;
 }) {
-  const [{ user }, { elections }, params] = await Promise.all([
+  const [{ user }, { elections, ballot_pilot }, params] = await Promise.all([
     getSessionUser(),
     getElections(),
     searchParams,
   ]);
-  const candidateResults = await Promise.all(
-    elections.map(async (election) => {
-      if (
-        election.status !== "active_voting" ||
-        !election.is_registered ||
-        election.has_voted
-      ) {
-        return [election.id, [] as Candidate[]] as const;
-      }
-      const { candidates } = await getCandidates(election.id);
-      return [election.id, candidates] as const;
-    }),
-  );
-  const candidatesByElection = new Map<string, Candidate[]>(candidateResults);
-
   return (
     <main className="page-shell">
       <header className="topbar">
@@ -82,43 +66,25 @@ export default async function DashboardPage({
                 </div>
               </div>
 
-              {election.is_registered && election.receipt_code && (
-                <aside className="receipt-panel">
-                  <div>
-                    <span className="field-caption">Your voter receipt</span>
-                    <code>{election.receipt_code}</code>
-                  </div>
-                  <Link
-                    className="text-link"
-                    href={`/verify?receipt=${encodeURIComponent(election.receipt_code)}`}
-                  >
-                    Verify receipt
-                  </Link>
-                </aside>
-              )}
               {!election.is_registered && (
                 <p className="muted">
                   You are not on the eligible voter list for this election.
                 </p>
               )}
-              {election.status === "active_voting" &&
-                election.is_registered &&
-                election.has_voted && (
-                  <p className="success-text">Your ballot has been recorded.</p>
-                )}
-              {election.status === "active_voting" &&
-                election.is_registered &&
-                !election.has_voted &&
-                election.receipt_id && (
-                  <div className="voting-section">
-                    <h3>Cast your ballot</h3>
-                    <BallotForm
-                      electionId={election.id}
-                      receiptId={election.receipt_id}
-                      candidates={candidatesByElection.get(election.id) ?? []}
-                    />
-                  </div>
-                )}
+              {election.is_registered && election.has_issuer && (
+                <>
+                  {ballot_pilot && election.status === "registration" && (
+                    <CredentialForm electionId={election.id} userId={user.id} />
+                  )}
+                  {ballot_pilot && election.status !== "registration" ? (
+                    <AnonymousBallotForm electionId={election.id} userId={user.id} closed={election.status === "completed"} />
+                  ) : (
+                    <p className="muted">{ballot_pilot && election.status === "registration"
+                      ? "Voting opens at the scheduled start time."
+                      : "Anonymous ballot submission is unavailable."}</p>
+                  )}
+                </>
+              )}
             </article>
           ))}
         </div>

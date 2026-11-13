@@ -22,7 +22,6 @@ type App struct {
 	otp            *OTPService
 	qr             *QRService
 	mailer         OTPMailer
-	ballotVerifier BallotVerifier
 	oauth          *OAuthService
 }
 
@@ -44,17 +43,12 @@ func (a *App) routes() http.Handler {
 	}
 
 	api.Handle("GET /api/elections", requireLogin(http.HandlerFunc(a.handleListElections)))
-	api.Handle("GET /api/elections/{electionId}/candidates",
-		requireVoter(http.HandlerFunc(a.handleListCandidates)))
-	api.Handle("POST /api/elections/{electionId}/ballots",
-		requireVoter(http.HandlerFunc(a.handleSubmitBallot)))
-	api.Handle("GET /api/elections/{electionId}/keys",
-		requireLogin(http.HandlerFunc(a.handleGetElectionKeys)))
-	api.Handle("POST /api/elections/{electionId}/sign-ballot",
-		requireVoter(http.HandlerFunc(a.handleSignBallot)))
 	api.Handle("GET /api/elections/{electionId}/results",
 		http.HandlerFunc(a.handleGetElectionResults))
-	api.HandleFunc("GET /api/verify/{receiptCode}", a.handleVerifyReceipt)
+	api.Handle("POST /api/elections/{electionId}/credential",
+		requireVoter(http.HandlerFunc(a.handleIssueCredential)))
+	api.Handle("GET /api/elections/{electionId}/credential-key",
+		requireVoter(http.HandlerFunc(a.handleCredentialKey)))
 
 	api.Handle("POST /api/admin/elections",
 		requireAdmin(http.HandlerFunc(a.handleCreateElection)))
@@ -102,6 +96,18 @@ func (a *App) routes() http.Handler {
 	}
 
 	root := http.NewServeMux()
+	root.HandleFunc("POST /api/anonymous/elections/{electionId}/ballots", a.handleAnonymousBallot)
+	root.HandleFunc("GET /api/anonymous/elections/{electionId}/manifest", a.handleAnonymousManifest)
+	root.HandleFunc("GET /api/anonymous/trackers/{ballotHash}", a.handleBallotTracker)
+	if a.anonymousBallotPilot() {
+		root.HandleFunc("GET /api/anonymous/assets/wasm_exec.js", func(w http.ResponseWriter, r *http.Request) {
+			http.ServeFile(w, r, "/ballot-assets/wasm_exec.js")
+		})
+		root.HandleFunc("GET /api/anonymous/assets/ballot.wasm", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/wasm")
+			http.ServeFile(w, r, "/ballot-assets/ballot.wasm")
+		})
+	}
 	root.Handle("/api/", a.loadSession(api))
 	root.Handle("/", http.FileServer(http.Dir(a.cfg.FrontendDir)))
 	return root
@@ -140,7 +146,6 @@ func main() {
 		otp:            newOTPService(rdb, cfg.OTPSecret),
 		mailer:         mailer,
 		qr:             newQRService(rdb),
-		ballotVerifier: NewBallotVerifier(pool, cfg.MasterKey),
 		oauth:          newOAuthService(cfg, rdb),
 	}
 

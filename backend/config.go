@@ -12,27 +12,28 @@ import (
 )
 
 type Config struct {
-	Port               string
-	DBHost             string
-	DBPort             string
-	DBName             string
-	DBUser             string
-	DBPassword         string
-	RedisURL           string
-	OTPSecret          string
-	MasterKey          []byte
-	SMTPHost           string
-	SMTPPort           string
-	SMTPUser           string
-	SMTPPassword       string
-	SMTPFrom           string
-	Env                string
-	FrontendDir        string
-	AllowedEmailDomain string
-	GoogleClientID     string
-	GoogleClientSecret string
-	GoogleRedirectURL  string
-	OAuthEnabled       bool
+	Port                 string
+	DBHost               string
+	DBPort               string
+	DBName               string
+	DBUser               string
+	DBPassword           string
+	RedisURL             string
+	OTPSecret            string
+	MasterKey            []byte
+	SMTPHost             string
+	SMTPPort             string
+	SMTPUser             string
+	SMTPPassword         string
+	SMTPFrom             string
+	Env                  string
+	FrontendDir          string
+	AllowedEmailDomain   string
+	AnonymousBallotPilot bool
+	GoogleClientID       string
+	GoogleClientSecret   string
+	GoogleRedirectURL    string
+	OAuthEnabled         bool
 }
 
 func (c *Config) IsDev() bool        { return c.Env == "development" }
@@ -55,21 +56,22 @@ func loadConfig() (*Config, error) {
 	_ = godotenv.Load()
 
 	cfg := &Config{
-		Port:         getenv("PORT", "3000"),
-		DBHost:       getenv("DB_HOST", "localhost"),
-		DBPort:       getenv("DB_PORT", "5432"),
-		DBName:       os.Getenv("DB_NAME"),
-		DBUser:       os.Getenv("DB_USER"),
-		DBPassword:   os.Getenv("DB_PASSWORD"),
-		RedisURL:     getenv("REDIS_URL", "redis://127.0.0.1:6379"),
-		OTPSecret:    os.Getenv("OTP_SECRET"),
-		SMTPHost:     os.Getenv("SMTP_HOST"),
-		SMTPPort:     getenv("SMTP_PORT", "587"),
-		SMTPUser:     os.Getenv("SMTP_USER"),
-		SMTPPassword: os.Getenv("SMTP_PASSWORD"),
-		SMTPFrom:     os.Getenv("SMTP_FROM"),
-		Env:          getenv("APP_ENV", "production"),
-		FrontendDir:  getenv("FRONTEND_DIR", "../frontend"),
+		Port:                 getenv("PORT", "3000"),
+		DBHost:               getenv("DB_HOST", "localhost"),
+		DBPort:               getenv("DB_PORT", "5432"),
+		DBName:               os.Getenv("DB_NAME"),
+		DBUser:               os.Getenv("DB_USER"),
+		DBPassword:           os.Getenv("DB_PASSWORD"),
+		RedisURL:             getenv("REDIS_URL", "redis://127.0.0.1:6379"),
+		OTPSecret:            os.Getenv("OTP_SECRET"),
+		SMTPHost:             os.Getenv("SMTP_HOST"),
+		SMTPPort:             getenv("SMTP_PORT", "587"),
+		SMTPUser:             os.Getenv("SMTP_USER"),
+		SMTPPassword:         os.Getenv("SMTP_PASSWORD"),
+		SMTPFrom:             os.Getenv("SMTP_FROM"),
+		Env:                  getenv("APP_ENV", "production"),
+		FrontendDir:          getenv("FRONTEND_DIR", "../frontend"),
+		AnonymousBallotPilot: getenv("ANONYMOUS_BALLOT_PILOT", "true") == "true",
 		AllowedEmailDomain: strings.ToLower(strings.TrimPrefix(
 			strings.TrimSpace(getenv("ALLOWED_EMAIL_DOMAIN", "ugm.ac.id")), "@")),
 		GoogleClientID:     strings.TrimSpace(os.Getenv("GOOGLE_CLIENT_ID")),

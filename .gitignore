@@ -6,3 +6,5 @@ frontend/tsconfig.tsbuildinfo
 npm-debug.log*
 .env
 *.exe
+database/anonymous-voting.md
+database/schema-diagram.md

@@ -8,9 +8,9 @@ import (
 )
 
 type voterStatus struct {
-	UserID   string `json:"user_id"`
-	Email    string `json:"email"`
-	HasVoted bool   `json:"has_voted"`
+	UserID           string `json:"user_id"`
+	Email            string `json:"email"`
+	CredentialIssued bool   `json:"credential_issued"`
 }
 
 // GET /api/admin/elections/{electionId}/voters
@@ -43,7 +43,8 @@ func (a *App) handleListVoters(w http.ResponseWriter, r *http.Request) {
 		SELECT
 			u.id::text AS user_id,
 			u.email,
-			ve.has_voted
+			EXISTS (SELECT 1 FROM evoting.credential_issuances ci
+				WHERE ci.election_id = ve.election_id AND ci.user_id = ve.user_id)
 		FROM evoting.voter_eligibility ve
 		JOIN evoting.users u
 			ON ve.user_id = u.id
@@ -61,7 +62,7 @@ func (a *App) handleListVoters(w http.ResponseWriter, r *http.Request) {
 	voters := make([]voterStatus, 0) //[] if empty
 	for rows.Next() {
 		var v voterStatus
-		if err := rows.Scan(&v.UserID, &v.Email, &v.HasVoted); err != nil {
+		if err := rows.Scan(&v.UserID, &v.Email, &v.CredentialIssued); err != nil {
 			log.Printf("scan voter: %v", err)
 			writeError(w, http.StatusInternalServerError, "Failed to retrieve voter status")
 			return

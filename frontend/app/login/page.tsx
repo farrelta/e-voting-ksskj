@@ -14,7 +14,7 @@ export default function LoginPage() {
           <LoginForm />
         </Suspense>
         <a className="text-link auth-link" href="/verify">
-          Verify a ballot receipt
+          Verify a ballot
         </a>
       </section>
     </main>

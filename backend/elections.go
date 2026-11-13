@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/farrelta/e-voting-ksskj/backend-go/anonymousballot"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -40,10 +41,9 @@ type election struct {
 	VotingStart       time.Time `json:"voting_start"`
 	VotingEnd         time.Time `json:"voting_end"`
 	Status            string    `json:"status"`
+	RecordedBallots   *int      `json:"recorded_ballots,omitempty"`
+	HasIssuer         bool      `json:"has_issuer"`
 	IsRegistered      bool      `json:"is_registered,omitempty"`
-	HasVoted          bool      `json:"has_voted,omitempty"`
-	ReceiptID         string    `json:"receipt_id,omitempty"`
-	ReceiptCode       string    `json:"receipt_code,omitempty"`
 }
 
 func parseElectionInput(body electionInput) (electionInput, time.Time, time.Time, time.Time, time.Time, bool) {
@@ -65,21 +65,27 @@ func (a *App) handleListElections(w http.ResponseWriter, r *http.Request) {
 	query := `
 		SELECT id::text, title, COALESCE(description, ''), registration_start,
 			registration_end, voting_start, voting_end, status,
-			FALSE, FALSE, '', ''
-		FROM evoting.elections`
+			FALSE,
+			CASE WHEN k.election_id IS NOT NULL AND status = 'completed' THEN
+				(SELECT count(*)::int FROM evoting.anonymous_ballots b WHERE b.election_id = e.id)
+			END,
+			(k.election_id IS NOT NULL)
+		FROM evoting.elections e
+		LEFT JOIN evoting.anonymous_issuer_keys k ON k.election_id = e.id`
 	args := []any{}
 	if user.Role != "admin" {
 		query = `
 			SELECT e.id::text, e.title, COALESCE(e.description, ''),
 				e.registration_start, e.registration_end, e.voting_start, e.voting_end, e.status,
-				(ve.id IS NOT NULL), COALESCE(ve.has_voted, FALSE),
-				COALESCE(ve.receipt_id::text, ''), COALESCE(rec.receipt_code, '')
+				(ve.id IS NOT NULL), NULL::integer,
+				TRUE
 			FROM evoting.elections e
+			JOIN evoting.anonymous_issuer_keys k ON k.election_id = e.id
 			LEFT JOIN evoting.voter_eligibility ve
 				ON ve.election_id = e.id AND ve.user_id = $1::uuid
-			LEFT JOIN evoting.receipts rec ON rec.id = ve.receipt_id
-			WHERE e.status IN ('registration', 'active_voting')`
-		args = append(args, user.ID)
+			WHERE e.status IN ('registration', 'active_voting')
+				OR ($2::boolean AND e.status = 'completed' AND ve.id IS NOT NULL)`
+		args = append(args, user.ID, a.anonymousBallotPilot())
 	}
 	query += " ORDER BY registration_start DESC"
 
@@ -97,7 +103,7 @@ func (a *App) handleListElections(w http.ResponseWriter, r *http.Request) {
 		if err := rows.Scan(
 			&item.ID, &item.Title, &item.Description, &item.RegistrationStart,
 			&item.RegistrationEnd, &item.VotingStart, &item.VotingEnd, &item.Status,
-			&item.IsRegistered, &item.HasVoted, &item.ReceiptID, &item.ReceiptCode,
+			&item.IsRegistered, &item.RecordedBallots, &item.HasIssuer,
 		); err != nil {
 			log.Printf("scan election: %v", err)
 			writeError(w, http.StatusInternalServerError, "Failed to retrieve elections")
@@ -110,7 +116,10 @@ func (a *App) handleListElections(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "Failed to retrieve elections")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"elections": elections})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"elections":    elections,
+		"ballot_pilot": a.anonymousBallotPilot(),
+	})
 }
 
 func (a *App) handleCreateElection(w http.ResponseWriter, r *http.Request) {
@@ -125,10 +134,26 @@ func (a *App) handleCreateElection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	keys, err := GenerateElectionKeySet()
+	if input.Status != "draft" {
+		writeError(w, http.StatusBadRequest, "Create anonymous elections as drafts")
+		return
+	}
+	if !a.anonymousBallotPilot() {
+		writeError(w, http.StatusServiceUnavailable, "Anonymous election creation is available only with the ballot pilot enabled in development")
+		return
+	}
+
+	keys, err := generateElectionKeySet(anonymousballot.GenerateKey)
 	if err != nil {
 		log.Printf("generate election keys: %v", err)
 		writeError(w, http.StatusInternalServerError, "Failed to generate election cryptographic keys")
+		return
+	}
+
+	issuerPublic, issuerPrivate, err := newAnonymousIssuerKey(a.cfg.MasterKey)
+	if err != nil {
+		log.Print("could not provision anonymous issuer key")
+		writeError(w, http.StatusInternalServerError, "Failed to provision anonymous credential key")
 		return
 	}
 
@@ -184,11 +209,19 @@ func (a *App) handleCreateElection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	_, err = tx.Exec(r.Context(), `
+		INSERT INTO evoting.anonymous_issuer_keys (election_id, public_key, private_key_enc)
+		VALUES ($1::uuid, $2, $3)`, id, issuerPublic, issuerPrivate)
+	if err != nil {
+		anonymousStorageError(w, err)
+		return
+	}
 	if err := tx.Commit(r.Context()); err != nil {
 		log.Printf("commit election creation: %v", err)
 		writeError(w, http.StatusInternalServerError, "Failed to create election")
 		return
 	}
+	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusCreated, map[string]string{
 		"id":                        id,
 		"he_secret_key":             base64.StdEncoding.EncodeToString(keys.HESecretKey),
@@ -216,7 +249,9 @@ func (a *App) handleUpdateElection(w http.ResponseWriter, r *http.Request) {
 		UPDATE evoting.elections SET title = $1, description = NULLIF($2, ''),
 			registration_start = $3, registration_end = $4, voting_start = $5,
 			voting_end = $6, status = $7
-		WHERE id = $8::uuid`,
+		WHERE id = $8::uuid
+			AND status = 'draft' AND $7 = 'draft'
+			AND EXISTS (SELECT 1 FROM evoting.anonymous_issuer_keys k WHERE k.election_id = elections.id)`,
 		input.Title, strings.TrimSpace(input.Description), registrationStart,
 		registrationEnd, votingStart, votingEnd, input.Status, electionID,
 	)
@@ -226,7 +261,7 @@ func (a *App) handleUpdateElection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if tag.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "Election not found")
+		writeError(w, http.StatusNotFound, "Election not found or election settings are locked")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"message": "Election updated"})
@@ -267,7 +302,8 @@ func (a *App) handleDeleteElection(w http.ResponseWriter, r *http.Request) {
 	var hasVoters, hasBallots bool
 	if err := tx.QueryRow(r.Context(), `
 		SELECT EXISTS (SELECT 1 FROM evoting.voter_eligibility WHERE election_id = $1::uuid),
-		       EXISTS (SELECT 1 FROM evoting.encrypted_ballots WHERE election_id = $1::uuid)`,
+		       EXISTS (SELECT 1 FROM evoting.anonymous_ballots WHERE election_id = $1::uuid)
+		        OR EXISTS (SELECT 1 FROM evoting.election_results WHERE election_id = $1::uuid)`,
 		electionID,
 	).Scan(&hasVoters, &hasBallots); err != nil {
 		log.Printf("check election records before deletion: %v", err)
@@ -275,15 +311,10 @@ func (a *App) handleDeleteElection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if hasVoters || hasBallots {
-		writeError(w, http.StatusConflict, "Elections with voter registrations or ballots cannot be deleted")
+		writeError(w, http.StatusConflict, "Elections with eligible voters, recorded ballots, or saved results cannot be deleted")
 		return
 	}
 
-	if _, err := tx.Exec(r.Context(), `DELETE FROM evoting.receipts WHERE election_id = $1::uuid`, electionID); err != nil {
-		log.Printf("delete election receipts: %v", err)
-		writeError(w, http.StatusInternalServerError, "Failed to delete election")
-		return
-	}
 	if _, err := tx.Exec(r.Context(), `DELETE FROM evoting.candidates WHERE election_id = $1::uuid`, electionID); err != nil {
 		log.Printf("delete election candidates: %v", err)
 		writeError(w, http.StatusInternalServerError, "Failed to delete election")
@@ -320,9 +351,35 @@ func (a *App) handleUpdateElectionStatus(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, "Unsupported election status")
 		return
 	}
-	tag, err := a.db.Exec(r.Context(),
-		`UPDATE evoting.elections SET status = $1 WHERE id = $2::uuid`,
-		body.Status, electionID,
+	ctx := r.Context()
+	tx, err := a.db.Begin(ctx)
+	if err != nil {
+		log.Printf("begin election status update: %v", err)
+		writeError(w, http.StatusInternalServerError, "Failed to update election status")
+		return
+	}
+	defer tx.Rollback(ctx)
+
+	// Candidate mutations take the same lock. Count candidates only after
+	// acquiring it so registration freezes a committed list.
+	var lockedID string
+	err = tx.QueryRow(ctx, `SELECT id::text FROM evoting.elections WHERE id = $1::uuid FOR UPDATE`, electionID).Scan(&lockedID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "Election not found")
+		return
+	}
+	if err != nil {
+		log.Printf("lock election for status update: %v", err)
+		writeError(w, http.StatusInternalServerError, "Failed to update election status")
+		return
+	}
+	tag, err := tx.Exec(ctx,
+		`UPDATE evoting.elections SET status = $1 WHERE id = $2::uuid
+			AND ($3::boolean AND status = 'draft' AND $1 = 'registration' AND voting_end > clock_timestamp()
+					AND (SELECT count(*) FROM evoting.candidates c WHERE c.election_id = elections.id) BETWEEN 1 AND $4
+					AND EXISTS (SELECT 1 FROM evoting.anonymous_issuer_keys k
+						WHERE k.election_id = elections.id))`,
+		body.Status, electionID, a.anonymousBallotPilot(), anonymousballot.MaxCandidates,
 	)
 	if err != nil {
 		log.Printf("update election status: %v", err)
@@ -330,7 +387,12 @@ func (a *App) handleUpdateElectionStatus(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if tag.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "Election not found")
+		writeError(w, http.StatusConflict, "Status transition unavailable. To open an anonymous pilot, use a ballot pilot draft with 1 to 32 candidates and a future voting end.")
+		return
+	}
+	if err := tx.Commit(ctx); err != nil {
+		log.Printf("commit election status update: %v", err)
+		writeError(w, http.StatusInternalServerError, "Failed to update election status")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"message": "Election status updated"})
@@ -360,7 +422,10 @@ func (a *App) handleCreateCandidate(w http.ResponseWriter, r *http.Request) {
 	defer tx.Rollback(r.Context())
 	var status string
 	err = tx.QueryRow(r.Context(), `
-		SELECT status FROM evoting.elections WHERE id = $1::uuid FOR UPDATE`, body.ElectionID,
+		SELECT CASE WHEN status <> 'draft' OR NOT EXISTS (
+			SELECT 1 FROM evoting.anonymous_issuer_keys k WHERE k.election_id = elections.id)
+			THEN 'locked' ELSE status END
+		FROM evoting.elections WHERE id = $1::uuid FOR UPDATE`, body.ElectionID,
 	).Scan(&status)
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, http.StatusNotFound, "Election not found")
@@ -406,56 +471,6 @@ func (a *App) handleCreateCandidate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]string{"id": id})
 }
 
-func (a *App) handleListCandidates(w http.ResponseWriter, r *http.Request) {
-	electionID := r.PathValue("electionId")
-	if _, err := uuid.Parse(electionID); err != nil {
-		writeError(w, http.StatusBadRequest, "Invalid election ID")
-		return
-	}
-	user := sessionFrom(r).User
-	rows, err := a.db.Query(r.Context(), `
-		SELECT c.id::text, c.name, COALESCE(c.description, '')
-		FROM evoting.candidates c
-		JOIN evoting.elections e ON e.id = c.election_id
-		JOIN evoting.voter_eligibility ve ON ve.election_id = e.id
-		WHERE c.election_id = $1::uuid AND ve.user_id = $2::uuid
-			AND e.status = 'active_voting' AND ve.has_voted = FALSE
-		ORDER BY c.name, c.id`,
-		electionID, user.ID,
-	)
-	if err != nil {
-		log.Printf("list candidates: %v", err)
-		writeError(w, http.StatusInternalServerError, "Failed to retrieve candidates")
-		return
-	}
-	defer rows.Close()
-
-	type candidate struct {
-		ID          string `json:"id"`
-		Name        string `json:"name"`
-		Description string `json:"description"`
-		Index       int    `json:"index"`
-	}
-	candidates := make([]candidate, 0)
-	for rows.Next() {
-		var item candidate
-		if err := rows.Scan(&item.ID, &item.Name, &item.Description); err != nil {
-			log.Printf("scan candidate: %v", err)
-			writeError(w, http.StatusInternalServerError, "Failed to retrieve candidates")
-			return
-		}
-		item.Index = len(candidates)
-		candidates = append(candidates, item)
-	}
-	if err := rows.Err(); err != nil {
-		log.Printf("iterate candidates: %v", err)
-		writeError(w, http.StatusInternalServerError, "Failed to retrieve candidates")
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"candidates": candidates})
-}
-
-// GET /api/admin/elections/{electionId}/candidates
 func (a *App) handleListElectionCandidates(w http.ResponseWriter, r *http.Request) {
 	electionID := r.PathValue("electionId")
 	if _, err := uuid.Parse(electionID); err != nil {
@@ -501,7 +516,10 @@ func candidateElectionStatus(ctx context.Context, db interface {
 }, candidateID string) (string, error) {
 	var status string
 	err := db.QueryRow(ctx, `
-		SELECT e.status FROM evoting.candidates c
+		SELECT CASE WHEN e.status <> 'draft' OR NOT EXISTS (
+			SELECT 1 FROM evoting.anonymous_issuer_keys k WHERE k.election_id = e.id)
+			THEN 'locked' ELSE e.status END
+		FROM evoting.candidates c
 		JOIN evoting.elections e ON e.id = c.election_id
 		WHERE c.id = $1::uuid FOR UPDATE OF e`, candidateID).Scan(&status)
 	return status, err

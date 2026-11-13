@@ -1,14 +1,9 @@
 package main
 
 import (
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
 	"fmt"
-
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/farrelta/e-voting-ksskj/backend-go/cryptoutil"
 )
@@ -24,6 +19,10 @@ type ElectionKeySet struct {
 }
 
 func GenerateElectionKeySet() (*ElectionKeySet, error) {
+	return generateElectionKeySet(cryptoutil.GenerateHEKeyPair)
+}
+
+func generateElectionKeySet(generateTallyKey func() ([]byte, []byte, error)) (*ElectionKeySet, error) {
 	kemPub, kemPriv, err := cryptoutil.GenerateKEMKeyPair()
 	if err != nil {
 		return nil, fmt.Errorf("kem keygen: %w", err)
@@ -32,7 +31,7 @@ func GenerateElectionKeySet() (*ElectionKeySet, error) {
 	if err != nil {
 		return nil, fmt.Errorf("dsa keygen: %w", err)
 	}
-	hePub, heSec, err := cryptoutil.GenerateHEKeyPair()
+	hePub, heSec, err := generateTallyKey()
 	if err != nil {
 		return nil, fmt.Errorf("he keygen: %w", err)
 	}
@@ -47,68 +46,4 @@ func GenerateElectionKeySet() (*ElectionKeySet, error) {
 		HESecretKey:            heSec,
 		HESecretKeyFingerprint: hex.EncodeToString(fingerprint[:]),
 	}, nil
-}
-
-type DefaultBallotVerifier struct {
-	db        *pgxpool.Pool
-	masterKey []byte
-}
-
-func NewBallotVerifier(db *pgxpool.Pool, masterKey []byte) *DefaultBallotVerifier {
-	return &DefaultBallotVerifier{db: db, masterKey: masterKey}
-}
-
-func (v *DefaultBallotVerifier) Verify(ctx context.Context, electionID string, encryptedVote, proof []byte) error {
-	if len(encryptedVote) == 0 {
-		return errors.New("empty encrypted vote")
-	}
-
-	// 1. Fetch election keys (KEM private key for unwrapping envelope, DSA public key for signature check)
-	var storedKEMPriv, dsaPubKey []byte
-	err := v.db.QueryRow(ctx, `
-		SELECT kem_private_key, dsa_public_key
-		FROM evoting.election_keys
-		WHERE election_id = $1::uuid`,
-		electionID,
-	).Scan(&storedKEMPriv, &dsaPubKey)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return errors.New("election signing key not found")
-	}
-	if err != nil {
-		return fmt.Errorf("retrieve election keys: %w", err)
-	}
-
-	kemPrivKey, err := decryptPrivateKey(storedKEMPriv, v.masterKey)
-	if err != nil {
-		return fmt.Errorf("decrypt kem private key: %w", err)
-	}
-	defer func() {
-		for i := range kemPrivKey {
-			kemPrivKey[i] = 0
-		}
-	}()
-
-	// 2. Unwrap ML-KEM envelope if enveloped, or accept raw HE ciphertext
-	rawCT, err := cryptoutil.UnwrapBallot(kemPrivKey, encryptedVote)
-	if err != nil {
-		return fmt.Errorf("unwrap ballot: %w", err)
-	}
-
-	// 3. Validate exact ciphertext length and structure (prevents stack overflow)
-	if err := cryptoutil.ValidateCiphertext(rawCT); err != nil {
-		return fmt.Errorf("invalid ballot ciphertext: %w", err)
-	}
-
-	// 4. Verify DSA signature if client provided proof
-	if len(proof) > 0 {
-		valid, err := cryptoutil.VerifySignature(dsaPubKey, rawCT, proof)
-		if err != nil {
-			return fmt.Errorf("verify signature: %w", err)
-		}
-		if !valid {
-			return errors.New("ballot signature verification failed")
-		}
-	}
-
-	return nil
 }

@@ -91,16 +91,16 @@ func (a *App) handleCreateVoterQR(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var status string
-	var hasVoted bool
 	err := a.db.QueryRow(r.Context(), `
-		SELECT e.status, ve.has_voted
+		SELECT e.status
 		FROM evoting.voter_eligibility ve
 		JOIN evoting.elections e ON e.id = ve.election_id
 		JOIN evoting.users u ON u.id = ve.user_id
 		WHERE ve.election_id = $1::uuid AND ve.user_id = $2::uuid
-			AND u.role = 'voter' AND u.is_verified = TRUE`,
+			AND u.role = 'voter' AND u.is_verified = TRUE
+			AND EXISTS (SELECT 1 FROM evoting.anonymous_issuer_keys k WHERE k.election_id = e.id)`,
 		electionID, userID,
-	).Scan(&status, &hasVoted)
+	).Scan(&status)
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, http.StatusNotFound, "Voter is not eligible for this election")
 		return
@@ -112,10 +112,6 @@ func (a *App) handleCreateVoterQR(w http.ResponseWriter, r *http.Request) {
 	}
 	if status == "completed" {
 		writeError(w, http.StatusConflict, "Election is completed")
-		return
-	}
-	if hasVoted {
-		writeError(w, http.StatusConflict, "This voter has already voted")
 		return
 	}
 

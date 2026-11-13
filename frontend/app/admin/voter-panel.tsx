@@ -3,25 +3,30 @@ import type { VoterStatus } from "@/lib/backend";
 import { ConfirmSubmitButton } from "./confirm-submit-button";
 import { VoterQr } from "./voter-qr";
 
-// Admin-side voter list. By design it only ever shows WHO is eligible and WHETHER
-// they have voted. It has no way to show a voter's choice.
 export function VoterPanel({
   electionId,
   status,
   voters,
+  anonymous,
+  recordedBallots,
 }: {
   electionId: string;
   status: string;
   voters: VoterStatus[];
+  anonymous: boolean;
+  recordedBallots?: number;
 }) {
-  const locked = status === "completed";
-  const votedCount = voters.filter((voter) => voter.has_voted).length;
+  const locked = !anonymous || status === "completed";
+  const issuedCount = voters.filter((voter) => voter.credential_issued).length;
 
   return (
     <details className="edit-details voter-management">
       <summary>
-        Eligible voters ({voters.length}, {votedCount} voted)
+        Eligible voters ({voters.length}{anonymous ? `, ${issuedCount} credentials issued` : ""})
       </summary>
+      {anonymous && recordedBallots !== undefined && (
+        <p className="muted">Ballots recorded: {recordedBallots}</p>
+      )}
       {!locked && (
         <form className="voter-add-form" action={addParticipants}>
           <input type="hidden" name="election_id" value={electionId} />
@@ -41,31 +46,37 @@ export function VoterPanel({
         <p className="muted">No voters have been made eligible yet.</p>
       ) : (
         <ul className="voter-list">
-          {voters.map((voter) => (
-            <li className="voter-row" key={voter.user_id}>
-              <div className="voter-identity">
-                <span>{voter.email}</span>
-                <span className={voter.has_voted ? "status status-active_voting" : "status status-draft"}>
-                  {voter.has_voted ? "Voted" : "Not voted"}
-                </span>
-              </div>
-              {!voter.has_voted && !locked && (
-                <div className="voter-actions">
-                  <VoterQr electionId={electionId} userId={voter.user_id} email={voter.email} />
-                  <form action={revokeEligibility}>
-                    <input type="hidden" name="election_id" value={electionId} />
-                    <input type="hidden" name="user_id" value={voter.user_id} />
-                    <ConfirmSubmitButton
-                      className="button button-danger"
-                      message={`Remove ${voter.email} from the eligible list?`}
-                    >
-                      Remove
-                    </ConfirmSubmitButton>
-                  </form>
+          {voters.map((voter) => {
+            const used = voter.credential_issued;
+            return (
+              <li className="voter-row" key={voter.user_id}>
+                <div className="voter-identity">
+                  <span>{voter.email}</span>
+                  {anonymous && (
+                    <span className={used ? "status status-active_voting" : "status status-draft"}>
+                      {used ? "Credential issued" : "Credential not issued"}
+                    </span>
+                  )}
                 </div>
-              )}
-            </li>
-          ))}
+                {!locked && (
+                  <div className="voter-actions">
+                    <VoterQr electionId={electionId} userId={voter.user_id} email={voter.email} />
+                    <form action={revokeEligibility}>
+                      <input type="hidden" name="election_id" value={electionId} />
+                      <input type="hidden" name="user_id" value={voter.user_id} />
+                      <ConfirmSubmitButton
+                        disabled={used}
+                        className="button button-danger"
+                        message={`Remove ${voter.email} from the eligible list?`}
+                      >
+                        Remove
+                      </ConfirmSubmitButton>
+                    </form>
+                  </div>
+                )}
+              </li>
+            );
+          })}
         </ul>
       )}
     </details>

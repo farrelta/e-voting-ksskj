@@ -1,12 +1,10 @@
 package main
 
 import (
-	"errors"
 	"log"
 	"net/http"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 )
 
 // POST /api/admin/elections/{electionId}/voters
@@ -42,7 +40,7 @@ func (a *App) handleGrantEligibility(w http.ResponseWriter, r *http.Request) {
 	}
 	switch {
 	case len(sum.Added) == 1:
-		writeJSON(w, http.StatusCreated, voterStatus{UserID: sum.Added[0].UserID, Email: email, HasVoted: false})
+		writeJSON(w, http.StatusCreated, voterStatus{UserID: sum.Added[0].UserID, Email: email})
 	case len(sum.AlreadyEligible) == 1:
 		writeError(w, http.StatusConflict, "This voter is already eligible for this election")
 	default:
@@ -91,30 +89,19 @@ func (a *App) handleRevokeEligibility(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var receiptID *string
-	err = tx.QueryRow(ctx, `
-		DELETE FROM evoting.voter_eligibility
-		WHERE election_id = $1::uuid AND user_id = $2::uuid AND has_voted = FALSE
-		RETURNING receipt_id::text`,
-		electionID, userID,
-	).Scan(&receiptID)
-	if errors.Is(err, pgx.ErrNoRows) {
-		writeError(w, http.StatusConflict, "Voter is not eligible for this election or has already voted")
-		return
-	}
+	tag, err := tx.Exec(ctx, `
+		DELETE FROM evoting.voter_eligibility ve
+		WHERE ve.election_id = $1::uuid AND ve.user_id = $2::uuid
+			AND NOT EXISTS (SELECT 1 FROM evoting.credential_issuances ci
+				WHERE ci.election_id = ve.election_id AND ci.user_id = ve.user_id)`, electionID, userID)
 	if err != nil {
 		log.Printf("delete eligibility: %v", err)
 		writeError(w, http.StatusInternalServerError, "Failed to revoke eligibility")
 		return
 	}
-	if receiptID != nil {
-		if _, err := tx.Exec(ctx,
-			`DELETE FROM evoting.receipts WHERE id = $1::uuid`, *receiptID,
-		); err != nil {
-			log.Printf("delete receipt: %v", err)
-			writeError(w, http.StatusInternalServerError, "Failed to revoke eligibility")
-			return
-		}
+	if tag.RowsAffected() == 0 {
+		writeError(w, http.StatusConflict, "Voter is not eligible or has already received a credential")
+		return
 	}
 
 	if err := tx.Commit(ctx); err != nil {

@@ -1,9 +1,6 @@
 package main
 
-import (
-	"regexp"
-	"testing"
-)
+import "testing"
 
 func TestParseElectionInput(t *testing.T) {
 	valid := electionInput{
@@ -55,15 +52,5 @@ func TestParseElectionInput(t *testing.T) {
 				t.Fatal("expected invalid election details to be rejected")
 			}
 		})
-	}
-}
-
-func TestNewReceiptCode(t *testing.T) {
-	code, err := newReceiptCode()
-	if err != nil {
-		t.Fatalf("generate receipt: %v", err)
-	}
-	if !regexp.MustCompile(`^EV-[A-Z2-7]{32}$`).MatchString(code) {
-		t.Fatalf("receipt code has an invalid format: %q", code)
 	}
 }

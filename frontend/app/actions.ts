@@ -20,31 +20,48 @@ function isoDate(formData: FormData, key: string) {
   return parsed.toISOString();
 }
 
-async function sendJson(path: string, method: string, body: unknown) {
+async function sendJson<T = Record<string, unknown>>(path: string, method: string, body: unknown) {
   const response = await backendRequest(path, {
     method,
     body: JSON.stringify(body),
   });
-  return readApiResponse<Record<string, unknown>>(response);
+  return readApiResponse<T>(response);
 }
 
-export async function createElection(formData: FormData) {
+type CreatedElection = { id: string; he_secret_key: string };
+
+export async function createElection(formData: FormData): Promise<
+  { ok: true; message: string; created: CreatedElection } | { ok: false; message: string }
+> {
+  let created: CreatedElection;
   try {
-    await sendJson("/api/admin/elections", "POST", {
+    created = await sendJson<CreatedElection>("/api/admin/elections", "POST", {
       title: formText(formData, "title"),
       description: formText(formData, "description"),
       registration_start: isoDate(formData, "registration_start"),
       registration_end: isoDate(formData, "registration_end"),
       voting_start: isoDate(formData, "voting_start"),
       voting_end: isoDate(formData, "voting_end"),
-      status: formText(formData, "status"),
+      status: "draft",
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Election creation failed.";
     return { ok: false, message };
   }
   revalidatePath("/admin");
-  return { ok: true, message: "Election created." };
+  return { ok: true, message: "Election created.", created };
+}
+
+export async function tallyElection(electionId: string, secretKey: string) {
+  try {
+    await sendJson(`/api/admin/elections/${encodeURIComponent(electionId)}/tally`, "POST", {
+      he_secret_key: secretKey,
+    });
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : "Tally failed." };
+  }
+  revalidatePath("/admin");
+  return { ok: true, message: "Election tally saved." };
 }
 
 export async function updateElection(formData: FormData) {
@@ -148,41 +165,6 @@ export async function deleteCandidate(formData: FormData) {
   revalidatePath("/admin");
   revalidatePath("/dashboard");
   redirect("/admin?notice=Candidate%20deleted");
-}
-
-export async function submitEncryptedBallot(
-  electionId: string,
-  receiptId: string,
-  encryptedVote: string,
-  proof: string,
-) {
-  if (!electionId || !receiptId || !encryptedVote || !proof) {
-    return { ok: false, message: "Encrypted ballot data is incomplete." };
-  }
-  const response = await backendRequest(
-    `/api/elections/${encodeURIComponent(electionId)}/ballots`,
-    {
-      method: "POST",
-      body: JSON.stringify({
-        receipt_id: receiptId,
-        encrypted_vote: encryptedVote,
-        proof,
-      }),
-    },
-  );
-  try {
-    const result = await readApiResponse<{ ballot_hash: string }>(response);
-    revalidatePath("/dashboard");
-    return {
-      ok: true,
-      message: `Ballot recorded. Hash: ${result.ballot_hash}`,
-    };
-  } catch (error) {
-    return {
-      ok: false,
-      message: error instanceof Error ? error.message : "Ballot submission failed.",
-    };
-  }
 }
 
 type BulkResult = {

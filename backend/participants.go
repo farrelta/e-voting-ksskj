@@ -86,17 +86,19 @@ func (a *App) addParticipants(ctx context.Context, electionID string, emails []s
 	defer tx.Rollback(ctx)
 
 	var status string
+	var hasIssuer bool
 	err = tx.QueryRow(ctx,
-		`SELECT status FROM evoting.elections WHERE id = $1::uuid FOR UPDATE`,
+		`SELECT status, EXISTS (SELECT 1 FROM evoting.anonymous_issuer_keys k WHERE k.election_id = e.id)
+		FROM evoting.elections e WHERE id = $1::uuid FOR UPDATE`,
 		electionID,
-	).Scan(&status)
+	).Scan(&status, &hasIssuer)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return sum, errElectionMissing
 	}
 	if err != nil {
 		return sum, err
 	}
-	if status == "completed" {
+	if status == "completed" || !hasIssuer {
 		return sum, errElectionClosed
 	}
 
@@ -196,34 +198,22 @@ func (a *App) addParticipants(ctx context.Context, electionID string, emails []s
 		}
 	}
 
-	//5. Issue receipt and an eligibility row to everyone new
-	var userIDs, receiptIDs, codes []string
+	// 5. Add eligibility rows for new participants.
+	var userIDs []string
 	for _, email := range candidates {
 		acct := accounts[email]
 		if alreadyEligible[acct.id] {
 			sum.AlreadyEligible = append(sum.AlreadyEligible, email)
 			continue
 		}
-		code, err := newReceiptCode()
-		if err != nil {
-			return sum, err
-		}
 		userIDs = append(userIDs, acct.id)
-		receiptIDs = append(receiptIDs, uuid.NewString())
-		codes = append(codes, code)
 		sum.Added = append(sum.Added, addedParticipant{Email: email, UserID: acct.id})
 	}
 	if len(userIDs) > 0 {
 		if _, err := tx.Exec(ctx, `
-			INSERT INTO evoting.receipts (id, election_id, receipt_code)
-			SELECT r::uuid, $1::uuid, c FROM unnest($2::text[], $3::text[]) AS t(r, c)`,
-			electionID, receiptIDs, codes); err != nil {
-			return sum, err
-		}
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO evoting.voter_eligibility (election_id, user_id, receipt_id)
-			SELECT $1::uuid, u::uuid, r::uuid FROM unnest($2::text[], $3::text[]) AS t(u, r)`,
-			electionID, userIDs, receiptIDs); err != nil {
+			INSERT INTO evoting.voter_eligibility (election_id, user_id)
+			SELECT $1::uuid, u::uuid FROM unnest($2::text[]) AS t(u)`,
+			electionID, userIDs); err != nil {
 			return sum, err
 		}
 	}
