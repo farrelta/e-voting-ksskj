@@ -86,7 +86,7 @@ func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := a.deliverOTP(ctx, user.Email, otp); err != nil {
+	if err := a.sendOTP(ctx, user.ID, user.Email, otp); err != nil {
 		log.Printf("send login OTP email: %v", err)
 		if cleanupErr := a.otp.DeleteChallenge(ctx, challengeID); cleanupErr != nil {
 			log.Printf("delete unsent OTP challenge: %v", cleanupErr)
@@ -149,6 +149,8 @@ func (a *App) handleVerifyOTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	a.otp.NoteSubmission(ctx, sess.PendingUserID)
+
 	if !result.Success {
 		if result.Reason == reasonInvalidOTP || result.Reason == reasonTooManyAttempts {
 			if err := a.limiter.Fail(ctx, ruleOTPFailures, sess.PendingUserID); err != nil {
@@ -208,6 +210,8 @@ func (a *App) handleVerifyOTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	a.otp.NoteLoginSuccess(ctx, user.ID)
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"message": "Authentication successful",
 		"user":    map[string]string{"email": user.Email, "role": user.Role},
@@ -260,7 +264,7 @@ func (a *App) handleResendOTP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "Failed to resend OTP")
 		return
 	}
-	if err := a.deliverOTP(ctx, userEmail, otp); err != nil {
+	if err := a.sendOTP(ctx, sess.PendingUserID, userEmail, otp); err != nil {
 		log.Printf("send resent OTP email: %v", err)
 		challengeID := sess.PendingChallengeID
 		_ = a.otp.DeleteChallenge(ctx, challengeID)

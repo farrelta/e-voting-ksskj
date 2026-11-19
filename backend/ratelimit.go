@@ -30,9 +30,9 @@ var (
 	ruleQRLoginIP      = rateRule{"qr-login-ip", 30, 10 * time.Minute}
 	ruleVerifyBallotIP = rateRule{"verify-ballot-ip", 60, time.Minute}
 
-	ruleLoginFailures = rateRule{"login-fail", 10, 15 * time.Minute} // wrong passwords
-	ruleOTPSends      = rateRule{"otp-send", 5, time.Hour}           // sign-in codes emailed
-	ruleOTPFailures   = rateRule{"otp-fail", 10, 15 * time.Minute}   // wrong codes, across all challenges
+	ruleLoginFailures = rateRule{"login-fail", 10, 2 * time.Hour}
+	ruleOTPSends      = rateRule{"otp-send", 5, time.Hour}
+	ruleOTPFailures   = rateRule{"otp-fail", 10, 15 * time.Minute}
 )
 
 var rateLimitScript = redis.NewScript(`

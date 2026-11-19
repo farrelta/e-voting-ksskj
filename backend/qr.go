@@ -179,7 +179,7 @@ func (a *App) handleQRLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "QR sign-in failed")
 		return
 	}
-	if err := a.deliverOTP(ctx, email, otp); err != nil {
+	if err := a.sendOTP(ctx, userID, email, otp); err != nil {
 		log.Printf("send QR sign-in OTP email: %v", err)
 		if cleanupErr := a.otp.DeleteChallenge(ctx, challengeID); cleanupErr != nil {
 			log.Printf("delete unsent OTP challenge: %v", cleanupErr)

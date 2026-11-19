@@ -84,7 +84,7 @@ func (m *SMTPMailer) SendOTP(ctx context.Context, recipient, code string) error 
 		return fmt.Errorf("set SMTP sender: %w", err)
 	}
 	if err := client.Rcpt(to.Address); err != nil {
-		return fmt.Errorf("set SMTP recipient: %w", err)
+		return &recipientError{err: fmt.Errorf("set SMTP recipient: %w", err)}
 	}
 	writer, err := client.Data()
 	if err != nil {

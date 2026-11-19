@@ -3,14 +3,16 @@ package main
 import (
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/google/uuid"
 )
 
 type voterStatus struct {
-	UserID   string `json:"user_id"`
-	Email    string `json:"email"`
-	HasVoted bool   `json:"has_voted"`
+	UserID    string `json:"user_id"`
+	Email     string `json:"email"`
+	HasVoted  bool   `json:"has_voted"`
+	OTPStatus string `json:"otp_status"`
 }
 
 // GET /api/admin/elections/{electionId}/voters
@@ -74,8 +76,18 @@ func (a *App) handleListVoters(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	ids := make([]string, len(voters))
+	for i := range voters {
+		ids[i] = voters[i].UserID
+	}
+	states, mailProblem := a.otp.Statuses(ctx, ids, time.Now())
+	for i := range voters {
+		voters[i].OTPStatus = states[voters[i].UserID]
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
-		"election_id": electionID,
-		"voters":      voters,
+		"election_id":  electionID,
+		"voters":       voters,
+		"mail_problem": mailProblem,
 	})
 }
