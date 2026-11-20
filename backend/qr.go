@@ -183,6 +183,7 @@ func (a *App) handleQRLogin(w http.ResponseWriter, r *http.Request) {
 	sess := sessionFrom(r)
 	sess.PendingChallengeID = challengeID
 	sess.PendingUserID = userID
+	sess.PendingOAuthIdentityID = ""
 	if err := a.sessions.Save(ctx, w, sess); err != nil {
 		log.Printf("save session: %v", err)
 		if cleanupErr := a.otp.DeleteChallenge(ctx, challengeID); cleanupErr != nil {

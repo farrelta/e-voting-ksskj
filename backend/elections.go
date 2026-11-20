@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"log"
 	"net/http"
@@ -143,12 +145,15 @@ func (a *App) handleCreateElection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	keys, err := generateElectionKeySet(anonymousballot.GenerateKey)
+	ballotPublicKey, tallySecretKey, err := anonymousballot.GenerateKey()
 	if err != nil {
 		log.Printf("generate election keys: %v", err)
 		writeError(w, http.StatusInternalServerError, "Failed to generate election cryptographic keys")
 		return
 	}
+	defer clear(tallySecretKey)
+	digest := sha256.Sum256(tallySecretKey)
+	tallyKeyFingerprint := hex.EncodeToString(digest[:])
 
 	issuerPublic, issuerPrivate, err := newAnonymousIssuerKey(a.cfg.MasterKey)
 	if err != nil {
@@ -181,27 +186,11 @@ func (a *App) handleCreateElection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	encKEMPriv, err := encryptPrivateKey(keys.KEMPrivateKey, a.cfg.MasterKey)
-	if err != nil {
-		log.Printf("encrypt kem private key: %v", err)
-		writeError(w, http.StatusInternalServerError, "Failed to secure election cryptographic keys")
-		return
-	}
-	encDSAPriv, err := encryptPrivateKey(keys.DSAPrivateKey, a.cfg.MasterKey)
-	if err != nil {
-		log.Printf("encrypt dsa private key: %v", err)
-		writeError(w, http.StatusInternalServerError, "Failed to secure election cryptographic keys")
-		return
-	}
-
 	_, err = tx.Exec(r.Context(), `
 		INSERT INTO evoting.election_keys (
-			election_id, kem_public_key, kem_private_key,
-			dsa_public_key, dsa_private_key, he_public_key, he_secret_key_fingerprint
-		) VALUES ($1::uuid, $2, $3, $4, $5, $6, $7)`,
-		id, keys.KEMPublicKey, encKEMPriv,
-		keys.DSAPublicKey, encDSAPriv,
-		keys.HEPublicKey, keys.HESecretKeyFingerprint,
+			election_id, ballot_public_key, tally_key_fingerprint
+		) VALUES ($1::uuid, $2, $3)`,
+		id, ballotPublicKey, tallyKeyFingerprint,
 	)
 	if err != nil {
 		log.Printf("save election keys: %v", err)
@@ -224,8 +213,8 @@ func (a *App) handleCreateElection(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusCreated, map[string]string{
 		"id":                        id,
-		"he_secret_key":             base64.StdEncoding.EncodeToString(keys.HESecretKey),
-		"he_secret_key_fingerprint": keys.HESecretKeyFingerprint,
+		"he_secret_key":             base64.StdEncoding.EncodeToString(tallySecretKey),
+		"he_secret_key_fingerprint": tallyKeyFingerprint,
 	})
 }
 

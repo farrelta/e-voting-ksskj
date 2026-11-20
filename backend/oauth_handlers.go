@@ -37,6 +37,22 @@ func redirectBackToLogin(w http.ResponseWriter, r *http.Request, code string) {
 	http.Redirect(w, r, "/login?"+q.Encode(), http.StatusFound)
 }
 
+func (a *App) oauthBrowserCookie() http.Cookie {
+	cookie := http.Cookie{
+		Name:     "evoting.oauth",
+		Path:     "/api/auth/google/callback",
+		MaxAge:   int(oAuthStateTTL.Seconds()),
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+	}
+	if a.cfg.IsProduction() || strings.HasPrefix(a.cfg.GoogleRedirectURL, "https://") {
+		cookie.Name = "__Host-evoting.oauth"
+		cookie.Path = "/"
+		cookie.Secure = true
+	}
+	return cookie
+}
+
 // GET /api/auth/google
 // Starts the authorization code flow by redirecting to Google.
 func (a *App) handleOAuthStart(w http.ResponseWriter, r *http.Request) {
@@ -45,13 +61,22 @@ func (a *App) handleOAuthStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	state, nonce, err := a.oauth.StartState(r.Context())
+	browserToken, err := randomURLToken()
+	if err != nil {
+		log.Printf("oauth generate browser token: %v", err)
+		redirectBackToLogin(w, r, oauthErrState)
+		return
+	}
+	state, nonce, err := a.oauth.StartState(r.Context(), browserToken)
 	if err != nil {
 		log.Printf("oauth start state: %v", err)
 		redirectBackToLogin(w, r, oauthErrState)
 		return
 	}
 
+	cookie := a.oauthBrowserCookie()
+	cookie.Value = browserToken
+	http.SetCookie(w, &cookie)
 	w.Header().Set("Cache-Control", "no-store")
 	http.Redirect(w, r, a.oauth.AuthCodeURL(state, nonce), http.StatusFound)
 }
@@ -80,7 +105,13 @@ func (a *App) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	nonce, err := a.oauth.ConsumeState(ctx, r.URL.Query().Get("state"))
+	cookie := a.oauthBrowserCookie()
+	browser, err := r.Cookie(cookie.Name)
+	if err != nil {
+		redirectBackToLogin(w, r, oauthErrState)
+		return
+	}
+	nonce, err := a.oauth.ConsumeState(ctx, r.URL.Query().Get("state"), browser.Value)
 	if err != nil {
 		if !errors.Is(err, errStateInvalid) {
 			log.Printf("oauth consume state: %v", err)
@@ -88,6 +119,8 @@ func (a *App) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 		redirectBackToLogin(w, r, oauthErrState)
 		return
 	}
+	cookie.MaxAge = -1
+	http.SetCookie(w, &cookie)
 
 	tokens, err := a.oauth.Exchange(ctx, code)
 	if err != nil {
@@ -165,6 +198,7 @@ func (a *App) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	sess.PendingChallengeID = challengeID
 	sess.PendingUserID = user.ID
+	sess.PendingOAuthIdentityID = user.IdentityID
 	if err := a.sessions.Save(ctx, w, sess); err != nil {
 		log.Printf("oauth save session: %v", err)
 		if cleanupErr := a.otp.DeleteChallenge(ctx, challengeID); cleanupErr != nil {
@@ -186,6 +220,7 @@ var (
 
 // oauthAccount is the account a verified Google identity resolves to.
 type oauthAccount struct {
+	IdentityID string
 	ID         string
 	Email      string
 	Role       string
@@ -205,19 +240,13 @@ func (a *App) linkOAuthIdentity(ctx context.Context, claims *googleClaims) (*oau
 	// immutable while a Google account email can change.
 	var acct oauthAccount
 	err = tx.QueryRow(ctx, `
-		SELECT u.id::text, u.email, u.role::text, u.is_verified
+		SELECT oi.id::text, u.id::text, u.email, u.role::text, u.is_verified
 		FROM evoting.oauth_identities oi
 		JOIN evoting.users u ON u.id = oi.user_id
 		WHERE oi.provider = $1 AND oi.subject = $2`,
 		oauthProviderGoogle, claims.Subject,
-	).Scan(&acct.ID, &acct.Email, &acct.Role, &acct.IsVerified)
+	).Scan(&acct.IdentityID, &acct.ID, &acct.Email, &acct.Role, &acct.IsVerified)
 	if err == nil {
-		if _, err := tx.Exec(ctx, `
-			UPDATE evoting.oauth_identities SET last_login_at = CURRENT_TIMESTAMP
-			WHERE provider = $1 AND subject = $2`,
-			oauthProviderGoogle, claims.Subject); err != nil {
-			return nil, err
-		}
 		if err := tx.Commit(ctx); err != nil {
 			return nil, err
 		}
@@ -251,12 +280,12 @@ func (a *App) linkOAuthIdentity(ctx context.Context, claims *googleClaims) (*oau
 	// Re-check under the lock: another request may have linked this subject
 	// while we waited for the row.
 	err = tx.QueryRow(ctx, `
-		SELECT u.id::text, u.email, u.role::text, u.is_verified
+		SELECT oi.id::text, u.id::text, u.email, u.role::text, u.is_verified
 		FROM evoting.oauth_identities oi
 		JOIN evoting.users u ON u.id = oi.user_id
 		WHERE oi.provider = $1 AND oi.subject = $2`,
 		oauthProviderGoogle, claims.Subject,
-	).Scan(&acct.ID, &acct.Email, &acct.Role, &acct.IsVerified)
+	).Scan(&acct.IdentityID, &acct.ID, &acct.Email, &acct.Role, &acct.IsVerified)
 	if err == nil {
 		if err := tx.Commit(ctx); err != nil {
 			return nil, err
@@ -267,11 +296,12 @@ func (a *App) linkOAuthIdentity(ctx context.Context, claims *googleClaims) (*oau
 		return nil, err
 	}
 
-	if _, err := tx.Exec(ctx, `
-		INSERT INTO evoting.oauth_identities (user_id, provider, subject, email, last_login_at)
-		VALUES ($1::uuid, $2, $3, $4, CURRENT_TIMESTAMP)`,
-		acct.ID, oauthProviderGoogle, claims.Subject, acct.Email,
-	); err != nil {
+	if err := tx.QueryRow(ctx, `
+		INSERT INTO evoting.oauth_identities (user_id, provider, subject, email)
+		VALUES ($1::uuid, $2, $3, $4)
+		RETURNING id::text`,
+		acct.ID, oauthProviderGoogle, claims.Subject, claims.Email,
+	).Scan(&acct.IdentityID); err != nil {
 		// One app account may only be linked to a given provider once. A
 		// different Google account resolving to the same user is a conflict the
 		// administrator has to resolve, not something to silently accept.

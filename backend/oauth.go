@@ -28,7 +28,8 @@ const (
 	// googleIssuer is the only issuer whose tokens are accepted.
 	googleIssuer = "https://accounts.google.com"
 
-	oAuthStateTTL = 10 * time.Minute
+	oAuthStateTTL   = 10 * time.Minute
+	oauthTokenBytes = 32
 
 	// jwksMaxAge caps how long the signing keys are cached when Google omits
 	// Cache-Control.
@@ -53,8 +54,12 @@ var (
 	errTokenInvalid = errors.New("google id token is invalid")
 )
 
-// oauthStateKey namespaces the single-use authorization state values in Redis.
-func oauthStateKey(state string) string { return "oauth:state:" + state }
+// Both the redirect state and the browser's separate token are needed to
+// address the single-use nonce in Redis.
+func oauthStateKey(state, browserToken string) string {
+	digest := sha256.Sum256([]byte(state + ":" + browserToken))
+	return "oauth:state:" + base64.RawURLEncoding.EncodeToString(digest[:])
+}
 
 // googleClaims holds only the ID token claims this application makes decisions on.
 type googleClaims struct {
@@ -97,7 +102,7 @@ func newOAuthService(cfg *Config, rdb *redis.Client) *OAuthService {
 }
 
 func randomURLToken() (string, error) {
-	b := make([]byte, 32)
+	b := make([]byte, oauthTokenBytes)
 	if _, err := rand.Read(b); err != nil {
 		return "", err
 	}
@@ -106,7 +111,7 @@ func randomURLToken() (string, error) {
 
 // StartState creates a single-use state value and remembers the nonce that the
 // resulting ID token must carry.
-func (s *OAuthService) StartState(ctx context.Context) (state, nonce string, err error) {
+func (s *OAuthService) StartState(ctx context.Context, browserToken string) (state, nonce string, err error) {
 	state, err = randomURLToken()
 	if err != nil {
 		return "", "", err
@@ -115,7 +120,7 @@ func (s *OAuthService) StartState(ctx context.Context) (state, nonce string, err
 	if err != nil {
 		return "", "", err
 	}
-	if err := s.rdb.Set(ctx, oauthStateKey(state), nonce, oAuthStateTTL).Err(); err != nil {
+	if err := s.rdb.Set(ctx, oauthStateKey(state, browserToken), nonce, oAuthStateTTL).Err(); err != nil {
 		return "", "", err
 	}
 	return state, nonce, nil
@@ -123,11 +128,12 @@ func (s *OAuthService) StartState(ctx context.Context) (state, nonce string, err
 
 // ConsumeState reads and deletes the state in one atomic step, so a replayed or
 // concurrent callback can never redeem the same state twice.
-func (s *OAuthService) ConsumeState(ctx context.Context, state string) (string, error) {
-	if state == "" || len(state) > 128 {
+func (s *OAuthService) ConsumeState(ctx context.Context, state, browserToken string) (string, error) {
+	tokenLength := base64.RawURLEncoding.EncodedLen(oauthTokenBytes)
+	if len(state) != tokenLength || len(browserToken) != tokenLength {
 		return "", errStateInvalid
 	}
-	nonce, err := s.rdb.GetDel(ctx, oauthStateKey(state)).Result()
+	nonce, err := s.rdb.GetDel(ctx, oauthStateKey(state, browserToken)).Result()
 	if errors.Is(err, redis.Nil) {
 		return "", errStateInvalid
 	}

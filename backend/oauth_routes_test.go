@@ -3,6 +3,7 @@ package main
 import (
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -78,6 +79,19 @@ func TestOAuthStartRedirectsToGoogle(t *testing.T) {
 	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
 		t.Errorf("Cache-Control = %q, want no-store", got)
 	}
+	locationURL, err := url.Parse(location)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cookies := rec.Result().Cookies()
+	if len(cookies) != 1 || cookies[0].Value == "" || strings.Contains(location, cookies[0].Value) ||
+		!cookies[0].HttpOnly || cookies[0].SameSite != http.SameSiteLaxMode ||
+		cookies[0].MaxAge != int(oAuthStateTTL.Seconds()) {
+		t.Fatal("start must issue a separate, short-lived browser cookie")
+	}
+	if nonce, err := app.oauth.ConsumeState(t.Context(), locationURL.Query().Get("state"), cookies[0].Value); err != nil || nonce != locationURL.Query().Get("nonce") {
+		t.Fatal("browser cookie must match the state and nonce in the redirect")
+	}
 }
 
 func TestOAuthCallbackRejectsMissingCode(t *testing.T) {
@@ -117,6 +131,9 @@ func TestOAuthCallbackRejectsForgedState(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet,
 		"/api/auth/google/callback?code=attacker-code&state=forged-state", nil)
+	browser := app.oauthBrowserCookie()
+	browser.Value = testBrowserToken
+	req.AddCookie(&browser)
 	mux.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusFound {
@@ -161,18 +178,21 @@ func TestOAuthCallbackRejectsReplayedState(t *testing.T) {
 
 	// A recorded first attempt must fail at the state check only, so the test
 	// stays offline: the state is consumed before any token exchange happens.
-	state, _, err := app.oauth.StartState(t.Context())
+	state, _, err := app.oauth.StartState(t.Context(), testBrowserToken)
 	if err != nil {
 		t.Fatalf("StartState: %v", err)
 	}
 
-	if _, err := app.oauth.ConsumeState(t.Context(), state); err != nil {
+	if _, err := app.oauth.ConsumeState(t.Context(), state, testBrowserToken); err != nil {
 		t.Fatalf("first ConsumeState: %v", err)
 	}
 
 	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet,
-		"/api/auth/google/callback?code=replay&state="+state, nil))
+	req := httptest.NewRequest(http.MethodGet, "/api/auth/google/callback?code=replay&state="+state, nil)
+	browser := app.oauthBrowserCookie()
+	browser.Value = testBrowserToken
+	req.AddCookie(&browser)
+	mux.ServeHTTP(rec, req)
 
 	if loc := rec.Header().Get("Location"); !strings.Contains(loc, "error="+oauthErrState) {
 		t.Fatalf("replayed state Location = %q, want an oauth_state error", loc)

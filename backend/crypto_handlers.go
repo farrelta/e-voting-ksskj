@@ -95,7 +95,7 @@ func (a *App) handleTallyElection(w http.ResponseWriter, r *http.Request) {
 	// Verify the tally key against the stored fingerprint.
 	var expectedFingerprint string
 	err = tx.QueryRow(r.Context(), `
-		SELECT he_secret_key_fingerprint
+		SELECT tally_key_fingerprint
 		FROM evoting.election_keys
 		WHERE election_id = $1::uuid`,
 		electionID,

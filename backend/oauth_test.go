@@ -22,8 +22,9 @@ import (
 )
 
 const (
-	testClientID = "test-client-id.apps.googleusercontent.com"
-	testHostedDn = "ugm.ac.id"
+	testClientID     = "test-client-id.apps.googleusercontent.com"
+	testHostedDn     = "ugm.ac.id"
+	testBrowserToken = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFG"
 )
 
 // newTestOAuthService returns a service wired to miniredis and to a local JWKS
@@ -125,7 +126,7 @@ func TestStartStateStoresNonce(t *testing.T) {
 	svc, mr, _ := newTestOAuthService(t)
 	ctx := context.Background()
 
-	state, nonce, err := svc.StartState(ctx)
+	state, nonce, err := svc.StartState(ctx, testBrowserToken)
 	if err != nil {
 		t.Fatalf("StartState: %v", err)
 	}
@@ -135,7 +136,7 @@ func TestStartStateStoresNonce(t *testing.T) {
 	if state == nonce {
 		t.Fatal("state and nonce must differ")
 	}
-	got, err := mr.Get(oauthStateKey(state))
+	got, err := mr.Get(oauthStateKey(state, testBrowserToken))
 	if err != nil {
 		t.Fatalf("read stored nonce: %v", err)
 	}
@@ -148,12 +149,17 @@ func TestConsumeStateIsSingleUse(t *testing.T) {
 	svc, _, _ := newTestOAuthService(t)
 	ctx := context.Background()
 
-	state, nonce, err := svc.StartState(ctx)
+	state, nonce, err := svc.StartState(ctx, testBrowserToken)
 	if err != nil {
 		t.Fatalf("StartState: %v", err)
 	}
 
-	got, err := svc.ConsumeState(ctx, state)
+	wrongBrowser := strings.Repeat("x", len(testBrowserToken))
+	if _, err := svc.ConsumeState(ctx, state, wrongBrowser); err != errStateInvalid {
+		t.Fatalf("ConsumeState with another browser: %v, want invalid state", err)
+	}
+
+	got, err := svc.ConsumeState(ctx, state, testBrowserToken)
 	if err != nil {
 		t.Fatalf("first ConsumeState: %v", err)
 	}
@@ -161,7 +167,7 @@ func TestConsumeStateIsSingleUse(t *testing.T) {
 		t.Fatalf("ConsumeState returned %q, want %q", got, nonce)
 	}
 
-	if _, err := svc.ConsumeState(ctx, state); err == nil {
+	if _, err := svc.ConsumeState(ctx, state, testBrowserToken); err == nil {
 		t.Fatal("a replayed state must be rejected")
 	}
 }
@@ -170,13 +176,13 @@ func TestConsumeStateRejectsUnknownAndEmpty(t *testing.T) {
 	svc, _, _ := newTestOAuthService(t)
 	ctx := context.Background()
 
-	if _, err := svc.ConsumeState(ctx, "never-issued"); err == nil {
+	if _, err := svc.ConsumeState(ctx, strings.Repeat("x", len(testBrowserToken)), testBrowserToken); err == nil {
 		t.Fatal("an unknown state must be rejected")
 	}
-	if _, err := svc.ConsumeState(ctx, ""); err == nil {
+	if _, err := svc.ConsumeState(ctx, "", testBrowserToken); err == nil {
 		t.Fatal("an empty state must be rejected")
 	}
-	if _, err := svc.ConsumeState(ctx, strings.Repeat("a", 200)); err == nil {
+	if _, err := svc.ConsumeState(ctx, strings.Repeat("a", 200), testBrowserToken); err == nil {
 		t.Fatal("an oversized state must be rejected")
 	}
 }
@@ -185,13 +191,13 @@ func TestConsumeStateExpires(t *testing.T) {
 	svc, mr, _ := newTestOAuthService(t)
 	ctx := context.Background()
 
-	state, _, err := svc.StartState(ctx)
+	state, _, err := svc.StartState(ctx, testBrowserToken)
 	if err != nil {
 		t.Fatalf("StartState: %v", err)
 	}
 	mr.FastForward(oAuthStateTTL + time.Minute)
 
-	if _, err := svc.ConsumeState(ctx, state); err == nil {
+	if _, err := svc.ConsumeState(ctx, state, testBrowserToken); err == nil {
 		t.Fatal("an expired state must be rejected")
 	}
 }

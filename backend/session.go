@@ -24,10 +24,11 @@ type SessionUser struct {
 }
 
 type Session struct {
-	ID                 string       `json:"-"`
-	PendingChallengeID string       `json:"pendingChallengeId,omitempty"`
-	PendingUserID      string       `json:"pendingUserId,omitempty"`
-	User               *SessionUser `json:"user,omitempty"`
+	ID                     string       `json:"-"`
+	PendingChallengeID     string       `json:"pendingChallengeId,omitempty"`
+	PendingUserID          string       `json:"pendingUserId,omitempty"`
+	PendingOAuthIdentityID string       `json:"pendingOAuthIdentityId,omitempty"`
+	User                   *SessionUser `json:"user,omitempty"`
 }
 
 type SessionStore struct {

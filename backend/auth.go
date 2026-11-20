@@ -78,6 +78,7 @@ func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 	sess := sessionFrom(r)
 	sess.PendingChallengeID = challengeID
 	sess.PendingUserID = user.ID
+	sess.PendingOAuthIdentityID = ""
 	if err := a.sessions.Save(ctx, w, sess); err != nil {
 		log.Printf("save session: %v", err)
 		if cleanupErr := a.otp.DeleteChallenge(ctx, challengeID); cleanupErr != nil {
@@ -155,6 +156,7 @@ func (a *App) handleVerifyOTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	oauthIdentityID := sess.PendingOAuthIdentityID
 	if err := a.sessions.Regenerate(ctx, sess); err != nil {
 		log.Printf("regenerate session: %v", err)
 		writeError(w, http.StatusInternalServerError, "Failed to create authenticated session")
@@ -165,6 +167,14 @@ func (a *App) handleVerifyOTP(w http.ResponseWriter, r *http.Request) {
 		log.Printf("save session: %v", err)
 		writeError(w, http.StatusInternalServerError, "Failed to create authenticated session")
 		return
+	}
+
+	if oauthIdentityID != "" {
+		if _, err := a.db.Exec(ctx, `
+			UPDATE evoting.oauth_identities SET last_login_at = GREATEST(last_login_at, CURRENT_TIMESTAMP)
+			WHERE id = $1::uuid AND user_id = $2::uuid`, oauthIdentityID, user.ID); err != nil {
+			log.Printf("record completed OAuth login: %v", err)
+		}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -260,6 +270,7 @@ func (a *App) handleLogout(w http.ResponseWriter, r *http.Request) {
 func (a *App) clearPendingLogin(w http.ResponseWriter, r *http.Request, sess *Session) {
 	sess.PendingChallengeID = ""
 	sess.PendingUserID = ""
+	sess.PendingOAuthIdentityID = ""
 	if err := a.sessions.Save(r.Context(), w, sess); err != nil {
 		log.Printf("clear pending login: %v", err)
 	}

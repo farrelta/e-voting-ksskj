@@ -32,7 +32,7 @@ type manifestDB interface {
 func loadBallotManifest(ctx context.Context, db manifestDB, id uuid.UUID) (ballotManifest, error) {
 	var m ballotManifest
 	err := db.QueryRow(ctx, `
-		SELECT k.he_public_key, i.public_key FROM evoting.election_keys k
+		SELECT k.ballot_public_key, i.public_key FROM evoting.election_keys k
 		JOIN evoting.elections e ON e.id = k.election_id
 		JOIN evoting.anonymous_issuer_keys i ON i.election_id = e.id
 		WHERE e.id = $1

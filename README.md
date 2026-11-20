@@ -74,10 +74,10 @@ publicly.
 
 ### Existing database
 
-Fresh databases get the latest schema from `database/schema.sql`. If an
-existing database is already through migration `009`, run the upgrade below
-with only `010_drop_voting_mode_and_pilot_only.sql` in the migration list.
-For older volumes, start the list at the first migration you still need.
+Fresh databases get the latest schema from `database/schema.sql`. For an
+existing volume, start the list below at the first migration you still need.
+If the database is already through migration `010`, run only
+`011_oauth_and_ballot_keys.sql`.
 
 ```bash
 (
@@ -97,7 +97,8 @@ For older volumes, start the list at the first migration you still need.
     007_default_anonymous_voting.sql \
     008_drop_legacy_ballot_tables.sql \
     009_drop_created_at.sql \
-    010_drop_voting_mode_and_pilot_only.sql
+    010_drop_voting_mode_and_pilot_only.sql \
+    011_oauth_and_ballot_keys.sql
   do
     docker compose exec -T db psql -v ON_ERROR_STOP=1 -U evoting_app -d evoting_db \
       < "database/migrations/$migration"
@@ -129,6 +130,12 @@ Migration `010` drops `elections.voting_mode` and
 `anonymous_issuer_keys.pilot_only`. It removes credential-only test keys and
 archives elections without an issuer. Existing anonymous ballot elections
 keep their issuer keys, ballots, and trackers.
+
+Migration `011` adds `oauth_identities` for Google sign-in and supersedes
+`003_oauth_identities.sql`. If that earlier OAuth migration was applied,
+`011` preserves the account links and drops `oauth_identities.created_at`.
+It also drops the unused KEM and DSA key columns and renames the ElGamal
+public key and tally key fingerprint columns without changing their values.
 
 ### Back up the tally key
 

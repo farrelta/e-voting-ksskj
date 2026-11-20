@@ -259,8 +259,8 @@ func TestBallotRejectedOutsideVotingWindow(t *testing.T) {
 		}{
 			{`UPDATE evoting.anonymous_issuer_keys SET public_key = $2, private_key_enc = $3 WHERE election_id = $1`, []any{id, pub, private}},
 			{`INSERT INTO evoting.election_keys
-				(election_id, kem_public_key, kem_private_key, dsa_public_key, dsa_private_key, he_public_key, he_secret_key_fingerprint)
-				VALUES ($1, ''::bytea, ''::bytea, ''::bytea, ''::bytea, $2, 'unused')`, []any{id, ballotKey}},
+				(election_id, ballot_public_key, tally_key_fingerprint)
+				VALUES ($1, $2, 'unused')`, []any{id, ballotKey}},
 			{`INSERT INTO evoting.candidates (election_id, name, position) VALUES ($1, 'Candidate', 0)`, []any{id}},
 		} {
 			if _, err := a.db.Exec(ctx, query.sql, query.args...); err != nil {

@@ -236,14 +236,25 @@ ALTER TABLE ONLY evoting.voter_eligibility
 
 CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA public;
 
+CREATE TABLE evoting.oauth_identities (
+    id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+    user_id uuid NOT NULL,
+    provider character varying(32) NOT NULL,
+    subject character varying(255) NOT NULL,
+    email character varying(255) NOT NULL,
+    last_login_at timestamp with time zone,
+    CONSTRAINT unique_provider_subject UNIQUE (provider, subject),
+    CONSTRAINT unique_user_provider UNIQUE (user_id, provider),
+    CONSTRAINT fk_oauth_identity_user FOREIGN KEY (user_id)
+        REFERENCES evoting.users(id) ON DELETE CASCADE
+);
+
+ALTER TABLE evoting.oauth_identities OWNER TO evoting_app;
+
 CREATE TABLE IF NOT EXISTS evoting.election_keys (
     election_id uuid PRIMARY KEY REFERENCES evoting.elections(id) ON DELETE CASCADE,
-    kem_public_key bytea NOT NULL,
-    kem_private_key bytea NOT NULL,
-    dsa_public_key bytea NOT NULL,
-    dsa_private_key bytea NOT NULL,
-    he_public_key bytea NOT NULL,
-    he_secret_key_fingerprint character varying(64) NOT NULL
+    ballot_public_key bytea NOT NULL,
+    tally_key_fingerprint character varying(64) NOT NULL
 );
 
 ALTER TABLE evoting.election_keys OWNER TO evoting_app;
